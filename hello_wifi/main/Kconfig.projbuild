@@ -1,0 +1,15 @@
+menu "Hello WiFi"
+
+    config HELLO_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            Name of your 2.4GHz WiFi network. The ESP32-S2 has no 5GHz radio.
+
+    config HELLO_WIFI_PASSWORD
+        string "WiFi password"
+        default "mypassword"
+        help
+            WPA2 password. Leave blank for an open network.
+
+endmenu

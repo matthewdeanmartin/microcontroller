@@ -1,0 +1,42 @@
+site_name: "microcontroller"
+site_author: "Matthew Dean Martin <matthewdeanmartin@gmail.com>"
+site_description: "Microcontroller experiments - ESP32 and friends"
+
+repo_url: "https://github.com/matthewdeanmartin/microcontroller"
+
+docs_dir: docs
+
+theme:
+  name: readthedocs
+  features:
+    - navigation.footer
+
+edit_uri: edit/main/docs/
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - codehilite
+  - toc:
+      permalink: true
+
+nav:
+  - "Home": "index.md"
+  - "Basic Setup":
+      - "Overview": "basic_setup/index.md"
+      - "The Board": "basic_setup/the_board.md"
+      - "Toolchain Setup": "basic_setup/toolchain.md"
+      - "The Project": "basic_setup/the_project.md"
+      - "Build, Flash, Monitor": "basic_setup/build_flash_monitor.md"
+      - "Troubleshooting": "basic_setup/troubleshooting.md"
+
+validation:
+  nav:
+    omitted_files: warn
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+plugins:
+  - search

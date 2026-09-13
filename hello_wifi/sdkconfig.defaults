@@ -1,0 +1,9 @@
+# Route console output over the chip's native USB (USB CDC),
+# since the S2 Mini has no separate USB-to-serial chip.
+CONFIG_ESP_CONSOLE_USB_CDC=y
+
+# 4MB flash, matching the ESP32-S2FN4R2 on this board.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# The FN4R2 also has 2MB of PSRAM; enable it so it's available.
+CONFIG_ESP32S2_SPIRAM_SUPPORT=y

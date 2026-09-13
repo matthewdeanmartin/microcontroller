@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- ESP-IDF ---
+build/
+sdkconfig
+sdkconfig.old
+managed_components/
+dependencies.lock
+
+# JetBrains IDEs
+.idea/
+
+# MkDocs
+site/
