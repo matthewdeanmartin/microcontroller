@@ -29,6 +29,22 @@ nav:
       - "The Project": "basic_setup/the_project.md"
       - "Build, Flash, Monitor": "basic_setup/build_flash_monitor.md"
       - "Troubleshooting": "basic_setup/troubleshooting.md"
+  - "MicroPython":
+      - "Overview": "micropython/index.md"
+      - "How It Works": "micropython/how_it_works.md"
+      - "Setup": "micropython/setup.md"
+      - "The Workflow": "micropython/workflow.md"
+      - "Finding It On Your Network": "micropython/finding_it.md"
+      - "Signal and Placement": "micropython/signal_and_placement.md"
+      - "The REPL": "micropython/repl.md"
+      - "Trade-offs": "micropython/trade_offs.md"
+  - "Secret Messages":
+      - "Overview": "secret_messages/index.md"
+      - "How The Encryption Works": "secret_messages/encryption.md"
+      - "Running It": "secret_messages/running.md"
+      - "The Board Tab": "secret_messages/diagnostics.md"
+      - "Mastodon": "secret_messages/mastodon.md"
+      - "Publishing The Front End": "secret_messages/publishing.md"
 
 validation:
   nav:
@@ -40,3 +56,4 @@ validation:
 
 plugins:
   - search
+

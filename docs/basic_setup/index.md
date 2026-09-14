@@ -46,4 +46,23 @@ I (5756) hello_wifi: got IP: 192.168.1.157
 I (5756) hello_wifi: HTTP server listening on port 80
 ```
 
-Then open that IP in a browser.
+Then open that IP in a browser:
+
+```text
+Hello from the ESP32-S2!
+Served by your DiGiYes S2 Mini over WiFi.
+Uptime: 111 seconds
+Free heap: 2186308 bytes
+IDF version: v5.5.3
+```
+
+That heap figure is the 2MB of PSRAM being picked up, which confirms
+`CONFIG_ESP32S2_SPIRAM_SUPPORT` took effect.
+
+!!! tip "Most failures are not the board"
+
+    Of the problems hit while writing this, the ones that cost real time were a
+    stale shell environment, an oversized stack variable, and the router's
+    2.4GHz radio going off the air by itself. The board and the SDK were fine
+    throughout. Read the [disconnect reason code](troubleshooting.md#repeated-disconnected)
+    and confirm the access point from another device before changing firmware.

@@ -229,3 +229,10 @@ dependencies.lock
 
 # MkDocs
 site/
+
+# MicroPython device credentials
+config.py
+
+# MicroPython firmware images (re-downloadable)
+hello_wifi_py/firmware/
+secret_messages/firmware/

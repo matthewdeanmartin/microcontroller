@@ -235,7 +235,7 @@ Otherwise use the reason code:
 
 | Code | Meaning | Fix |
 |------|---------|-----|
-| 201 | `NO_AP_FOUND` | Wrong SSID, 5GHz-only, or out of range |
+| 201 | `NO_AP_FOUND` | Wrong SSID, 5GHz-only, out of range, or [the AP's 2.4GHz radio is down](#the-24ghz-radio-disappeared) |
 | 202 | `AUTH_FAIL` | Wrong password |
 | 15 | `4WAY_HANDSHAKE_TIMEOUT` | Usually wrong password |
 | 200 / 205 | Beacon timeout / connection fail | Weak signal |
@@ -292,6 +292,67 @@ This project distinguishes the two with a `s_ever_connected` flag:
     `WIFI_PS_MIN_MODEM`. That is right for battery use, but it adds latency to
     incoming requests and makes a dropped link slower to notice. For a
     USB-powered server, `esp_wifi_set_ps(WIFI_PS_NONE)` keeps the radio awake.
+
+### The 2.4GHz radio disappeared
+
+Worth checking early, because nothing on the board can fix it and it looks like
+a board problem.
+
+Symptom — mostly reason 201, occasionally reason 2, never reaching `assoc`:
+
+```text
+W (3164) hello_wifi: disconnected (reason 201); retry 1/10 in 1000 ms
+I (4274) wifi:state: init -> auth (0xb0)
+I (5284) wifi:state: auth -> init (0x200)
+W (5304) hello_wifi: disconnected (reason 2); retry 2/10 in 2000 ms
+W (9734) hello_wifi: disconnected (reason 201); retry 3/10 in 4000 ms
+```
+
+**Reason 201 is `NO_AP_FOUND`, and it can be literally true.** A dual-band
+router runs two radios under one SSID, and the 2.4GHz one can stop broadcasting
+on its own — a firmware update, a radio restart, or a config change applied
+overnight. Every 2.4GHz-only device then drops off, while everything on 5GHz
+carries on and nothing appears wrong.
+
+Confirm from the PC rather than guessing, since it uses a different radio
+entirely:
+
+```powershell
+netsh wlan show networks mode=bssid |
+    Select-String -Pattern 'SSID|BSSID|Band|Channel '
+```
+
+A healthy dual-band router shows **two BSSIDs** for the SSID, usually differing
+in the last hex digit:
+
+```text
+BSSID 1 : 3c:bd:c5:1a:7e:72    Band : 2.4 GHz   Channel : 6
+BSSID 2 : 3c:bd:c5:1a:7e:73    Band : 5 GHz     Channel : 132
+```
+
+Only the 5GHz one listed means the 2.4GHz radio is down. The ESP32-S2 has no
+5GHz radio, so it has nothing to join and reports 201 correctly.
+
+!!! note "The PC may under-report"
+
+    An adapter associated to 5GHz sometimes omits other bands. Confirm on a
+    phone, or check whether any 2.4GHz-only device in the house (smart plug,
+    printer, thermostat) has also dropped offline.
+
+What to do:
+
+1. Check the router admin — is the 2.4GHz radio **enabled** and **broadcasting**
+2. Give 2.4GHz **its own SSID** (e.g. `Fios-Martin-24`). This removes band
+   steering permanently and does not disturb clients on 5GHz.
+3. Wait. In the case that produced this section, the radio returned by itself
+   some minutes later with no intervention.
+
+!!! warning "Do not debug this on the board"
+
+    Reverting firmware, re-flashing, and changing WiFi settings all achieve
+    nothing here, and each one invites a new bug. The disconnect reason code is
+    already telling the truth; verify the AP from another device before
+    touching the code.
 
 ### Only 5GHz available
 
