@@ -354,6 +354,16 @@ summary {
   color: var(--debit);
 }
 
+/*
+ * Row actions sit after the amount and wrap onto their own line on a phone,
+ * which is what the row's flex-wrap already does for the tags.
+ */
+.txn__actions {
+  display: flex;
+  gap: 0.375rem;
+  align-items: center;
+}
+
 /* --- Nana's panel --- */
 
 .stats {

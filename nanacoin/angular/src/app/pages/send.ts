@@ -1,5 +1,6 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { ActivatedRoute } from '@angular/router';
 
 import { NanacoinService, newIdempotencyKey } from '../api/nanacoin.service';
 import { Session } from '../api/session';
@@ -56,6 +57,30 @@ export class SendPage {
   protected amount: number | null = null;
   protected memo = '';
   protected readonly busy = signal(false);
+
+  /**
+   * Repeating a past transaction fills the form in and stops.
+   *
+   * Deliberately not sent automatically. "Repeat" reads as a shortcut for
+   * typing the same thing again, not as a second payment already on its way,
+   * and a mis-tap on a history row must not move money. The query parameters
+   * are a suggestion: the amount is still validated below and the recipient
+   * still has to be someone this user can pay.
+   */
+  constructor() {
+    const q = inject(ActivatedRoute).snapshot.queryParamMap;
+
+    const to = q.get('to');
+    // Only accept a recipient who is actually payable now. A repeat of a
+    // transfer to someone since disabled would otherwise preselect an option
+    // that is not in the list and submit an account the server refuses.
+    if (to && this.session.recipients().some((u) => u.account === to)) this.to = to;
+
+    const amount = Number(q.get('amount'));
+    if (Number.isInteger(amount) && amount > 0) this.amount = amount;
+
+    this.memo = q.get('memo') ?? '';
+  }
 
   protected async send(): Promise<void> {
     if (this.busy()) return;

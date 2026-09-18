@@ -1,10 +1,12 @@
 // Your own transactions, newest first.
 
-import { Component, computed, inject, resource } from '@angular/core';
+import { Component, computed, inject, resource, signal } from '@angular/core';
+import { RouterLink } from '@angular/router';
 
 import { Transaction } from '../api/models';
-import { NanacoinService } from '../api/nanacoin.service';
+import { NanacoinService, newIdempotencyKey } from '../api/nanacoin.service';
 import { Session } from '../api/session';
+import { Toasts } from '../ui/toasts';
 
 /** One row, already reduced to what this account actually experienced. */
 interface Row {
@@ -14,10 +16,27 @@ interface Row {
   /** The other party's display name, where there is a single one. */
   other: string;
   label: string;
+
+  /**
+   * The other party's account, when this row is one that could be sent again.
+   * Empty when it is not - see repeatable below.
+   */
+  otherAccount: string;
+
+  /**
+   * Whether "Repeat" makes sense for this row.
+   *
+   * Only an ordinary outgoing transfer. Repeating an ISSUE would mean minting
+   * more coin, a PURCHASE belongs to a listing that has already sold, and a
+   * REVERSAL is a correction to one specific transaction - none of those is
+   * "send that again", which is what the button offers.
+   */
+  repeatable: boolean;
 }
 
 @Component({
   selector: 'app-history',
+  imports: [RouterLink],
   template: `
     <h2>Your history</h2>
 
@@ -51,6 +70,32 @@ interface Row {
             @if (r.txn.kind === 'REVERSAL') {
               <span class="tag">correction</span>
             }
+
+            <div class="txn__actions">
+              @if (r.repeatable) {
+                <a
+                  class="btn btn--quiet btn--small"
+                  routerLink="/send"
+                  [queryParams]="{ to: r.otherAccount, amount: -r.delta, memo: r.txn.description }"
+                >Repeat</a>
+              }
+
+              <!--
+                Reversing is Nana's, and the server enforces that regardless of
+                this check - which is only here so everyone else is not shown a
+                button that would 403. An already-reversed transaction has no
+                button at all: the correction exists, and a second one would
+                undo the undo.
+              -->
+              @if (session.isNana() && !r.txn.reversed_by && r.txn.kind !== 'REVERSAL') {
+                <button
+                  class="btn btn--quiet btn--small"
+                  type="button"
+                  [disabled]="reversing() === r.txn.id"
+                  (click)="reverse(r.txn)"
+                >{{ reversing() === r.txn.id ? 'Reversing…' : 'Reverse' }}</button>
+              }
+            </div>
           </div>
         }
       </div>
@@ -59,7 +104,11 @@ interface Row {
 })
 export class HistoryPage {
   private readonly api = inject(NanacoinService);
-  private readonly session = inject(Session);
+  private readonly toasts = inject(Toasts);
+  protected readonly session = inject(Session);
+
+  /** The transaction currently being reversed, so only its button is busy. */
+  protected readonly reversing = signal<string | null>(null);
 
   /**
    * Reloads whenever the signed-in account changes. The balance in the top bar
@@ -86,9 +135,54 @@ export class HistoryPage {
       for (const p of txn.postings) if (p.account === account) delta += p.amount;
 
       const other = txn.postings.find((p) => p.account !== account);
-      return { txn, delta, other: other?.name ?? '', label: kindLabel(txn.kind) };
+      return {
+        txn,
+        delta,
+        other: other?.name ?? '',
+        label: kindLabel(txn.kind),
+        otherAccount: other?.account ?? '',
+        repeatable: txn.kind === 'TRANSFER' && delta < 0 && !!other?.account,
+      };
     });
   });
+
+  /**
+   * Appends the mirror transaction that undoes one, after asking why.
+   *
+   * The reason is required rather than optional: it becomes the description of
+   * a permanent ledger entry, and "Nana reversed it" without the because is
+   * the audit trail this project exists to avoid. Cancelling the prompt
+   * cancels the reversal.
+   */
+  protected async reverse(txn: Transaction): Promise<void> {
+    if (this.reversing()) return;
+
+    const reason = prompt(
+      `Reverse "${txn.description || kindLabel(txn.kind)}"?
+
+` +
+        'This appends a correction; it does not delete anything. Why?',
+    );
+    if (reason === null) return;
+    if (!reason.trim()) {
+      this.toasts.error('A reversal needs a reason.');
+      return;
+    }
+
+    this.reversing.set(txn.id);
+    try {
+      await this.api.reverse(txn.id, reason.trim(), newIdempotencyKey());
+      this.toasts.ok('Reversed.');
+      // Both the balances and this list changed, so refresh the shared state
+      // and re-read the page's own resource.
+      await this.session.refresh();
+      this.history.reload();
+    } catch (e) {
+      this.toasts.fromError(e);
+    } finally {
+      this.reversing.set(null);
+    }
+  }
 
   protected when(unixSeconds: number): string {
     return new Date(unixSeconds * 1000).toLocaleString(undefined, {
