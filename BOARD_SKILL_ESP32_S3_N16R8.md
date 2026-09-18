@@ -6,8 +6,16 @@ Working notes for this specific board, written from a session that took it from
 from a listing or an assumption and turned out wrong, that is recorded too —
 the wrong turns are the useful part.
 
-Companion to the ESP32-S2 notes in `docs/basic_setup/`. Read that one for the
-S2; the two boards differ more than their names suggest.
+Companion to [`BOARD_SKILL_ESP32_S2_MINI.md`](BOARD_SKILL_ESP32_S2_MINI.md),
+which carries the same kind of notes for the small 4MB S2 — including the table
+that decides **which of the two boards a job belongs on**. The long-form S2
+tutorial is in `docs/basic_setup/`. The two boards differ more than their names
+suggest.
+
+The short version: this board has the RAM, so it runs anything with a working
+set (NanaCoin's ledger). The S2 has flash and little else, so it serves static
+files. Only this board has Bluetooth, and only this board has a USB port that
+stays put.
 
 ---
 
