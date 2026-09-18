@@ -116,9 +116,42 @@ export class App {
     this.phase.set('app');
   }
 
+  /**
+   * Leaves the active account, staying in the app if another remains.
+   *
+   * Session.logout has already loaded whichever account it fell back to, so
+   * the only decision here is which screen to show.
+   */
   protected async logout(): Promise<void> {
     await this.session.logout();
+    this.phase.set(this.session.signedIn() ? 'app' : 'login');
+  }
+
+  /** Ends every session at once, for leaving a shared computer. */
+  protected async logoutAll(): Promise<void> {
+    await this.session.logoutAll();
     this.phase.set('login');
+  }
+
+  /**
+   * Shows the login form again to add a second account without leaving the
+   * first. onLoggedIn returns to the app, and the new account is active.
+   */
+  protected addAccount(): void {
+    this.phase.set('login');
+  }
+
+  /** Switches to another signed-in account, or to login if its token died. */
+  protected async switchTo(userId: string): Promise<void> {
+    try {
+      await this.session.switchTo(userId);
+      this.phase.set('app');
+    } catch (e) {
+      this.toasts.fromError(e);
+      // switchTo's 401 has already dropped that account. Whatever remains
+      // active is where the user lands; with nothing left, that is login.
+      this.phase.set(this.session.signedIn() ? 'app' : 'login');
+    }
   }
 
   protected async refresh(): Promise<void> {

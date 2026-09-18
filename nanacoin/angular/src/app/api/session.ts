@@ -6,12 +6,20 @@
 
 import { Injectable, computed, inject, signal } from '@angular/core';
 
+import { Accounts } from './accounts';
 import { ApiError, NanacoinService } from './nanacoin.service';
 import { Listing, Status, User } from './models';
 
 @Injectable({ providedIn: 'root' })
 export class Session {
   private readonly api = inject(NanacoinService);
+  private readonly accounts = inject(Accounts);
+
+  /** Every account this browser is signed into, for the switcher. */
+  readonly signedInAccounts = this.accounts.all;
+
+  /** True once a switcher is worth showing. */
+  readonly hasSeveralAccounts = this.accounts.hasSeveral;
 
   /** The signed-in user, or null. */
   readonly me = signal<User | null>(null);
@@ -87,6 +95,60 @@ export class Session {
   }
 
   /**
+   * Switches to another account already signed in on this browser.
+   *
+   * No network call and no password: the token was obtained at login and is
+   * still the server's. Everything the previous account could see is dropped
+   * and re-read, because household visibility differs by role - Nana sees
+   * balances that an ordinary member does not, and showing one person's view
+   * under another's name would be the worst possible bug in a ledger app.
+   *
+   * A token the server has since forgotten surfaces as a 401 on the refresh,
+   * which drops that account and leaves the caller to send the user back to
+   * the login screen.
+   */
+  async switchTo(userId: string): Promise<void> {
+    if (this.accounts.active()?.userId === userId) return;
+
+    const previous = this.accounts.active();
+    this.accounts.activate(userId);
+    this.me.set(null);
+    this.household.set([]);
+    this.listings.set([]);
+
+    try {
+      this.me.set(await this.api.me());
+      await this.refresh();
+    } catch (e) {
+      // The target's token was dead, and its own 401 has already dropped it.
+      // Go back to the account that was working rather than leaving the app
+      // signed into nothing while other live sessions are still held.
+      if (previous && this.accounts.all().some((a) => a.userId === previous.userId)) {
+        this.accounts.activate(previous.userId);
+        try {
+          this.me.set(await this.api.me());
+          await this.refresh();
+        } catch {
+          // Both are gone - a board reboot takes every session with it.
+          this.me.set(null);
+        }
+      }
+      throw e;
+    }
+  }
+
+  /** Ends every session this browser holds. */
+  async logoutAll(): Promise<void> {
+    try {
+      await this.api.logoutAll();
+    } finally {
+      this.me.set(null);
+      this.household.set([]);
+      this.listings.set([]);
+    }
+  }
+
+  /**
    * Logs out locally whatever the server says.
    *
    * Telling the server is a courtesy - it lets the session be revoked
@@ -103,6 +165,24 @@ export class Session {
       this.me.set(null);
       this.household.set([]);
       this.listings.set([]);
+    }
+
+    // Logging out of one account while others remain lands on whichever the
+    // store fell back to, rather than at the login screen. That is the point
+    // of holding several: leaving Nana should return the parent to their own
+    // account, not to a password box.
+    // remove() has already pointed the store at the fallback, so switchTo
+    // would see it as "already active" and return without loading anything.
+    // Load it here instead.
+    if (this.accounts.active()) {
+      try {
+        this.me.set(await this.api.me());
+        await this.refresh();
+      } catch {
+        // The fallback session was dead too. Its own 401 has already dropped
+        // it, and the caller sees a signed-out app.
+        this.me.set(null);
+      }
     }
   }
 

@@ -60,10 +60,38 @@
         </div>
 
         <div class="topbar__actions">
+          <!--
+            The switcher only appears once there is something to switch to.
+            A single-account household - which is most of them - sees exactly
+            what it saw before.
+          -->
+          @if (session.hasSeveralAccounts()) {
+            <label class="switcher">
+              <span class="visually-hidden">Active account</span>
+              <select
+                class="switcher__select"
+                [value]="session.me()?.id ?? ''"
+                (change)="switchTo($any($event.target).value)"
+              >
+                @for (a of session.signedInAccounts(); track a.userId) {
+                  <option [value]="a.userId">
+                    {{ a.displayName }}@if (a.role === 'nana') { (nana) }
+                  </option>
+                }
+              </select>
+            </label>
+          }
+
+          <button class="btn btn--quiet btn--small" (click)="addAccount()">Add account</button>
           <button class="btn btn--quiet btn--small" (click)="refresh()" [disabled]="session.loading()">
             {{ session.loading() ? 'Refreshing…' : 'Refresh' }}
           </button>
-          <button class="btn btn--quiet btn--small" (click)="logout()">Log out</button>
+          <button class="btn btn--quiet btn--small" (click)="logout()">
+            {{ session.hasSeveralAccounts() ? 'Leave this account' : 'Log out' }}
+          </button>
+          @if (session.hasSeveralAccounts()) {
+            <button class="btn btn--quiet btn--small" (click)="logoutAll()">Log out all</button>
+          }
         </div>
       </header>
 

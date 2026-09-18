@@ -8,6 +8,7 @@ import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http
 import { Injectable, inject } from '@angular/core';
 import { Observable, catchError, firstValueFrom, throwError } from 'rxjs';
 
+import { Accounts } from './accounts';
 import { ApiBase } from './api-base';
 import {
   AccountHistory,
@@ -49,8 +50,6 @@ export class ApiError extends Error {
   }
 }
 
-const TOKEN_KEY = 'nanacoin.token';
-
 @Injectable({ providedIn: 'root' })
 export class NanacoinService {
   private readonly http = inject(HttpClient);
@@ -61,7 +60,20 @@ export class NanacoinService {
     return this.apiBase.current();
   }
 
-  private token: string | null = readStoredToken();
+  private readonly accounts = inject(Accounts);
+
+  /**
+   * The bearer token of whichever account is active.
+   *
+   * Read through Accounts rather than held here, so that switching accounts is
+   * a pointer move in one place and every request afterwards is automatically
+   * made as the new person. A stale copy in this service was the obvious bug
+   * to avoid: it would send the previous account's token for exactly one
+   * request after a switch.
+   */
+  private get token(): string | null {
+    return this.accounts.token();
+  }
 
   get authenticated(): boolean {
     return this.token !== null;
@@ -112,17 +124,53 @@ export class NanacoinService {
       redirect_uri: redirectUri,
     });
 
-    this.setToken(tok.access_token);
+    this.accounts.add({
+      userId: tok.user.id,
+      username: tok.user.username,
+      displayName: tok.user.display_name,
+      role: tok.user.role,
+      token: tok.access_token,
+    });
     return tok.user;
   }
 
+  /**
+   * Ends the active session and forgets it, leaving any others intact.
+   *
+   * Telling the server is a courtesy - it revokes the token now rather than at
+   * expiry - but a failed request must not leave someone still signed in on a
+   * shared computer, which is the whole reason they pressed the button.
+   */
   async logout(): Promise<void> {
     try {
       await this.post<void>('/auth/logout', {});
     } finally {
-      // Whatever the server said, this browser is logged out.
-      this.setToken(null);
+      this.accounts.invalidateActive();
     }
+  }
+
+  /**
+   * Ends every session this browser holds.
+   *
+   * Each token is revoked separately because the server has no "log out
+   * everywhere" endpoint - they were issued independently and are independent.
+   * One failing revocation must not strand the rest, so failures are ignored
+   * and the local store is cleared regardless.
+   */
+  async logoutAll(): Promise<void> {
+    const held = this.accounts.all();
+    const active = this.accounts.active();
+
+    for (const account of held) {
+      this.accounts.activate(account.userId);
+      try {
+        await this.post<void>('/auth/logout', {});
+      } catch {
+        // An already-dead session is the common case here, and is fine.
+      }
+    }
+    if (active) this.accounts.activate(active.userId);
+    this.accounts.clear();
   }
 
   me(): Promise<User> {
@@ -288,17 +336,6 @@ export class NanacoinService {
 
   // --- plumbing ---
 
-  private setToken(token: string | null) {
-    this.token = token;
-    try {
-      if (token) sessionStorage.setItem(TOKEN_KEY, token);
-      else sessionStorage.removeItem(TOKEN_KEY);
-    } catch {
-      // Private browsing and blocked site data both throw. The cost is a
-      // re-login on refresh, which beats failing to work at all.
-    }
-  }
-
   private headers(idempotencyKey?: string): HttpHeaders {
     let h = new HttpHeaders();
     if (this.token) h = h.set('Authorization', `Bearer ${this.token}`);
@@ -358,7 +395,12 @@ export class NanacoinService {
             ),
         );
       }
-      if (err.status === 401) this.setToken(null);
+      // A 401 forgets the account that made the request, not every account.
+      // The session is gone - expired, or lost when the board rebooted, since
+      // sessions are RAM-only by design - but the others were issued
+      // separately. If the board did reboot they are equally dead, which the
+      // next request each makes will discover on its own.
+      if (err.status === 401) this.accounts.invalidateActive();
 
       const body = err.error as ApiErrorBody | null;
       return throwError(
@@ -400,12 +442,4 @@ export function newIdempotencyKey(): string {
   return base64url(bytes);
 }
 
-function readStoredToken(): string | null {
-  try {
-    // sessionStorage, not localStorage: on a shared household computer,
-    // closing the tab should end the session.
-    return sessionStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
-}
+

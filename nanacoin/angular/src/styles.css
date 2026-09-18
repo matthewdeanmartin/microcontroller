@@ -364,6 +364,31 @@ summary {
   align-items: center;
 }
 
+/*
+ * The account switcher. Only rendered when a second account exists, so it
+ * costs a single-account household nothing.
+ */
+.switcher__select {
+  font: inherit;
+  padding: 0.25rem 0.375rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+  max-width: 10rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* --- Nana's panel --- */
 
 .stats {
