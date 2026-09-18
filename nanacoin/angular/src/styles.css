@@ -389,6 +389,167 @@ summary {
   white-space: nowrap;
 }
 
+/* --- Economy charts ---
+ *
+ * The data is the only thing allowed to be loud: hairline grid, recessive
+ * axes, 2px lines, and markers ringed in the surface colour so overlapping
+ * series stay legible where they cross.
+ */
+
+.chart {
+  margin: 0 0 1.5rem;
+  padding: 0.875rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.chart__caption {
+  display: grid;
+  gap: 0.125rem;
+  margin-bottom: 0.5rem;
+}
+
+.chart__title {
+  font-weight: 700;
+}
+
+.chart__subtitle {
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.chart__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: pan-y;
+}
+
+.chart__grid,
+.chart__axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.chart__line {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart__marker {
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.chart__crosshair {
+  stroke: var(--ink-soft);
+  stroke-width: 1;
+}
+
+/* Text wears text tokens, never the series colour. */
+.chart__tick {
+  fill: var(--ink-soft);
+  font-size: 11px;
+  text-anchor: end;
+}
+
+.chart__tick--start {
+  text-anchor: start;
+}
+
+.chart__tick--end {
+  text-anchor: end;
+}
+
+.chart__endlabel {
+  fill: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  text-anchor: end;
+}
+
+.chart__readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+  min-height: 1.5rem;
+}
+
+.chart__readout-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+}
+
+.chart__table {
+  margin-top: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.chart__table table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+
+.chart__table th,
+.chart__table td {
+  padding: 0.25rem 0.5rem;
+  text-align: right;
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart__table th[scope='row'] {
+  text-align: left;
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+}
+
+.legend__swatch {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+}
+
+.chart-controls {
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+  color: var(--ink-soft);
+}
+
+/* Charts need horizontal room; let the table scroll rather than the page. */
+@media (max-width: 520px) {
+  .chart__table {
+    overflow-x: auto;
+  }
+}
+
 /* --- Nana's panel --- */
 
 .stats {

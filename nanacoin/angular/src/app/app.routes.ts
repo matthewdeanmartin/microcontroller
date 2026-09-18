@@ -21,6 +21,11 @@ export const routes: Routes = [
     title: 'History — NanaCoin',
   },
   {
+    path: 'economy',
+    loadComponent: () => import('./pages/economy').then((m) => m.EconomyPage),
+    title: 'Economy — NanaCoin',
+  },
+  {
     path: 'logs',
     loadComponent: () => import('./pages/logs').then((m) => m.LogsPage),
     title: 'Server logs — NanaCoin',
