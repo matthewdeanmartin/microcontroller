@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"runtime"
 	"testing"
+
+	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/eventlog"
 )
 
 // The streamed list endpoints must produce exactly the JSON the buffered ones
@@ -39,6 +41,11 @@ func TestStreamedListsAreValidJSON(t *testing.T) {
 	}
 
 	for _, tc := range cases {
+		// A no-logs build does not register /logs at all, so the route
+		// 404s by design and there is no streamed shape to check.
+		if tc.name == "logs" && !eventlog.Enabled {
+			continue
+		}
 		t.Run(tc.name, func(t *testing.T) {
 			w := h.do("GET", tc.path, tc.token, nil)
 			if w.Code != http.StatusOK {

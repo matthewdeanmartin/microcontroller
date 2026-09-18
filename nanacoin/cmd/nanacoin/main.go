@@ -38,6 +38,15 @@ func main() {
 		origins  = flag.String("origins", "http://localhost:4200,http://localhost:8080,http://localhost:5173", "comma-separated allowed CORS origins")
 		webDir   = flag.String("web", "web", "directory of static client files; empty to serve API only")
 		tokenTTL = flag.Duration("token-ttl", 8*time.Hour, "access token lifetime")
+		// Desktop RAM is not the constraint the board's is, so logging stays
+		// on by default here. The flag exists so the no-logs client path -
+		// a hidden Logs tab, a /logs that 404s - can be exercised without
+		// reflashing a board to see it.
+		//
+		// This is a flag and the board's equivalent is a build tag on
+		// purpose: there, turning the ring off has to remove the array at
+		// compile time to reclaim anything at all.
+		logs = flag.Bool("logs", true, "record server events and serve /api/v1/logs")
 	)
 	flag.Parse()
 
@@ -52,6 +61,7 @@ func main() {
 	status := svc.Status()
 	srv := api.NewServer(svc, sessions, api.Config{
 		AllowedOrigins: splitOrigins(*origins),
+		NoLog:          !*logs,
 		// Provisioning stays open until a Nana exists. There is no window
 		// in which a provisioned household can be re-provisioned: the
 		// service refuses that regardless of this flag.

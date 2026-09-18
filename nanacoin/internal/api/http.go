@@ -74,8 +74,20 @@ type Config struct {
 	AllowProvision bool
 
 	// Log receives request and decision events. Optional; a nil Log gets a
-	// working one, since the diagnostics are worth having by default.
+	// working one on a logging build, since the diagnostics are worth
+	// having by default. A no-logs build leaves it nil: constructing a ring
+	// there would allocate nothing (Capacity is 0) but would still claim
+	// the log exists, and /status reports the opposite.
 	Log *eventlog.Log
+
+	// NoLog turns event recording off even on a build that supports it.
+	//
+	// It exists because nil Log already means "give me the default one",
+	// and that convention cannot also express "explicitly none" - a host
+	// passing nil to mean off would silently get a working ring. Rather
+	// than change what nil means for every existing caller, off is its own
+	// field.
+	NoLog bool
 
 	// MaxPageSize caps list responses however large a limit the client asks
 	// for. Zero means DefaultMaxPageSize. The board sets this low: it is the
@@ -85,8 +97,11 @@ type Config struct {
 
 func NewServer(svc *core.Service, sessions *auth.Store, cfg Config) *Server {
 	log := cfg.Log
-	if log == nil {
+	if log == nil && eventlog.Enabled && !cfg.NoLog {
 		log = eventlog.New(func() int64 { return time.Now().Unix() })
+	}
+	if cfg.NoLog {
+		log = nil
 	}
 	maxPage := cfg.MaxPageSize
 	if maxPage <= 0 {
@@ -107,6 +122,15 @@ func NewServer(svc *core.Service, sessions *auth.Store, cfg Config) *Server {
 	}
 	return server
 }
+
+// logsEnabled reports whether this server records events and should serve
+// /logs.
+//
+// Both facts have to come from the same place. The build tag alone is not
+// enough: a logging build started with -logs=false has a nil log, and
+// registering the route or advertising the capability from the constant would
+// have the client render a Logs tab over an endpoint with nothing behind it.
+func (s *Server) logsEnabled() bool { return eventlog.Enabled && s.log != nil }
 
 // Log exposes the event log so a host can record its own events into the same
 // ring - WiFi state on the board, say.

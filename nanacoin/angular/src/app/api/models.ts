@@ -87,6 +87,19 @@ export interface Status {
   journal_capacity: number;
   /** False means the ledger does not add up and nobody should trust it. */
   ledger_balanced: boolean;
+
+  /**
+   * Whether this server records events and serves /logs at all.
+   *
+   * A build made without the event ring - which is how the board reclaims
+   * the ~4.6 KB it costs - does not register the route, so a Logs tab would
+   * link to a 404. Absent on an older server, which predates the flag and
+   * always had logs; treat undefined as true.
+   */
+  logs_enabled?: boolean;
+
+  /** Whether /diag exists. Same reasoning as logs_enabled. */
+  diag_enabled?: boolean;
 }
 
 export interface LogEvent {

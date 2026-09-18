@@ -28,6 +28,18 @@ export class Session {
   readonly loading = signal(false);
 
   readonly isNana = computed(() => this.me()?.role === 'nana');
+
+  /**
+   * Whether the server has server logs to show.
+   *
+   * Undefined means a server built before the capability was reported, which
+   * always had logs - so the tab stays for it rather than vanishing on an
+   * upgrade path nobody asked about.
+   */
+  readonly logsAvailable = computed(() => this.status()?.logs_enabled !== false);
+
+  /** Whether the server serves /diag. Same defaulting as logsAvailable. */
+  readonly diagAvailable = computed(() => this.status()?.diag_enabled !== false);
   readonly balance = computed(() => this.me()?.balance ?? 0);
   readonly signedIn = computed(() => this.me() !== null);
 

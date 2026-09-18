@@ -41,6 +41,19 @@ export class App {
   /** Why the connect screen is showing, when an error put it there. */
   protected readonly connectReason = signal('');
 
+  /**
+   * Whether to offer the logs link on the connect screen.
+   *
+   * Deliberately more permissive than session.logsAvailable(): the connect
+   * screen is shown precisely when the server could not be reached, and a
+   * status that never arrived says nothing about whether logs exist. Offering
+   * a link that might 404 beats withholding the one diagnostic that works
+   * when login does not - which is the whole reason it is on this screen.
+   */
+  protected readonly logsOfferable = computed(
+    () => this.session.status() === null || this.session.logsAvailable(),
+  );
+
   protected readonly household = computed(
     () => this.session.status()?.household ?? 'NanaCoin',
   );

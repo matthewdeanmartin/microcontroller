@@ -14,6 +14,12 @@ import (
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	st := s.svc.Status()
 
+	// Which diagnostics exist is the API layer's fact, not the service's:
+	// these are build tags over route registration. Filling them in here
+	// keeps core free of any knowledge about HTTP.
+	st.LogsEnabled = s.logsEnabled()
+	st.DiagEnabled = DiagEnabled
+
 	// Health goes in the body here as well as the header. A staged header can
 	// be dropped when the response buffer fills - which is exactly what hid
 	// the heap reading from the seven responses before a crash - and /status

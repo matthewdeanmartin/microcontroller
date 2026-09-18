@@ -77,9 +77,11 @@ import { NanacoinService } from '../api/nanacoin.service';
 
       @if (diagnosis()) {
         <p class="muted small">
-          <button class="btn btn--quiet btn--small" type="button" (click)="showLogs.emit()">
-            Look at the server logs
-          </button>
+          @if (logsAvailable()) {
+            <button class="btn btn--quiet btn--small" type="button" (click)="showLogs.emit()">
+              Look at the server logs
+            </button>
+          }
         </p>
       }
 
@@ -123,6 +125,15 @@ export class ConnectForm {
 
   /** Emitted once something at the entered address actually answers. */
   readonly connected = output<void>();
+
+  /**
+   * Whether this server has server logs worth offering.
+   *
+   * False only when a reachable server reported that it was built without
+   * them; an unreachable one leaves this true, since the link is most useful
+   * exactly when nothing else works.
+   */
+  readonly logsAvailable = input(true);
 
   /** Asks the shell to show the logs page without logging in first. */
   readonly showLogs = output<void>();

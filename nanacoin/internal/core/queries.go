@@ -132,6 +132,13 @@ type Status struct {
 	JournalUsed          int64         `json:"journal_used"`
 	JournalCap           int64         `json:"journal_capacity"`
 	LedgerBalance        bool          `json:"ledger_balanced"`
+
+	// LogsEnabled and DiagEnabled tell the client which optional
+	// diagnostics this build carries, so it can leave out a Logs tab that
+	// would only ever 404. The API layer fills them in: whether the routes
+	// exist is its business, not the service's.
+	LogsEnabled bool `json:"logs_enabled"`
+	DiagEnabled bool `json:"diag_enabled"`
 }
 
 func (s *Service) Status() Status {

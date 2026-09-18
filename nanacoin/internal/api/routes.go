@@ -26,8 +26,12 @@ func (s *Server) Handler() http.Handler {
 	const v1 = "/api/v1"
 
 	mux.HandleFunc(v1+"/status", s.only("GET", s.handleStatus))
-	mux.HandleFunc(v1+"/logs", s.only("GET", s.handleLogs))
-	mux.HandleFunc(v1+"/diag", s.only("GET", s.handleDiag))
+	if s.logsEnabled() {
+		mux.HandleFunc(v1+"/logs", s.only("GET", s.handleLogs))
+	}
+	if DiagEnabled {
+		mux.HandleFunc(v1+"/diag", s.only("GET", s.handleDiag))
+	}
 	mux.HandleFunc(v1+"/provision", s.only("POST", s.handleProvision))
 
 	mux.HandleFunc(v1+"/auth/authorize", s.only("POST", s.handleAuthorize))

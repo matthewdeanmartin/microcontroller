@@ -11,6 +11,7 @@
     <section class="screen screen--centred">
       <app-connect-form
         [reason]="connectReason()"
+        [logsAvailable]="logsOfferable()"
         (connected)="onConnected()"
         (showLogs)="showLogs()"
       />
@@ -73,7 +74,9 @@
         @if (session.isNana()) {
           <a class="tab" routerLink="/nana" routerLinkActive="tab--active">Household</a>
         }
-        <a class="tab" routerLink="/logs" routerLinkActive="tab--active">Logs</a>
+        @if (session.logsAvailable()) {
+          <a class="tab" routerLink="/logs" routerLinkActive="tab--active">Logs</a>
+        }
       </nav>
 
       <main>

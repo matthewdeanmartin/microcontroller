@@ -22,12 +22,6 @@ import (
 	"sync"
 )
 
-// Capacity is how many events are kept. Sized to cover a page load and the
-// handful of requests behind it, several times over, without being a
-// meaningful share of a microcontroller's RAM.
-// 58 is 90% of the previous 64 slots, rounded to the nearest whole entry.
-const Capacity = 58
-
 // MaxDetail bounds one entry's detail string. Long enough for a path and a
 // reason, short enough that Capacity entries are a predictable cost.
 const MaxDetail = 96
@@ -94,8 +88,11 @@ func New(now func() int64) *Log {
 // allocates, and silently truncates an over-long detail rather than refusing
 // to record - a clipped reason beats no reason.
 func (l *Log) Add(level Level, kind, detail string) {
-	if l == nil {
+	if l == nil || Capacity == 0 {
 		// A nil log is a working no-op, so callers do not need to check.
+		// So is a zero-capacity one, which is what a no-logs build has:
+		// the ring arithmetic below divides by Capacity, and there is no
+		// slot to write into anyway.
 		return
 	}
 	if len(detail) > MaxDetail {
@@ -114,13 +111,13 @@ func (l *Log) Add(level Level, kind, detail string) {
 		Kind:   kind,
 		Detail: detail,
 	}
-	l.next = (l.next + 1) % Capacity
+	l.next = advance(l.next)
 }
 
 // Recent returns up to limit events, newest first. limit <= 0 means all of
 // them.
 func (l *Log) Recent(limit int) []Event {
-	if l == nil {
+	if l == nil || Capacity == 0 {
 		return nil
 	}
 	l.mu.Lock()
@@ -137,7 +134,7 @@ func (l *Log) Recent(limit int) []Event {
 	out := make([]Event, 0, n)
 	// Walk backwards from the most recently written slot.
 	for i := 0; i < n; i++ {
-		idx := (l.next - 1 - i + Capacity*2) % Capacity
+		idx := back(l.next, i)
 		out = append(out, l.eventAt(idx))
 	}
 	return out
@@ -200,7 +197,7 @@ func (l *Log) Health() string {
 //
 // The lock is held for the whole walk, so fn must not call back into the log.
 func (l *Log) Each(limit int, fn func(Event) bool) {
-	if l == nil {
+	if l == nil || Capacity == 0 {
 		return
 	}
 	l.mu.Lock()
@@ -214,7 +211,7 @@ func (l *Log) Each(limit int, fn func(Event) bool) {
 		n = limit
 	}
 	for i := 0; i < n; i++ {
-		idx := (l.next - 1 - i + Capacity*2) % Capacity
+		idx := back(l.next, i)
 		if !fn(l.eventAt(idx)) {
 			return
 		}
@@ -225,7 +222,7 @@ func (l *Log) Each(limit int, fn func(Event) bool) {
 // a status string and "METHOD path" for every request. Joining now happens only
 // when logs are inspected; public log entries keep their familiar text shape.
 func (l *Log) Request(level Level, status int, method, path string) {
-	if l == nil {
+	if l == nil || Capacity == 0 {
 		return
 	}
 	kind := statusKind(status)
@@ -241,7 +238,7 @@ func (l *Log) Request(level Level, status int, method, path string) {
 	l.seq++
 	l.entries[l.next] = Event{Seq: l.seq, At: l.now(), Level: level.String(), Kind: kind, Detail: path}
 	l.methods[l.next] = method
-	l.next = (l.next + 1) % Capacity
+	l.next = advance(l.next)
 }
 
 func (l *Log) eventAt(i int) Event {
@@ -283,4 +280,29 @@ func statusKind(code int) string {
 	default:
 		return strconv.Itoa(code)
 	}
+}
+
+// advance and back do the ring's index arithmetic.
+//
+// They exist because the compiler rejects a literal `% Capacity` as a
+// division by zero when Capacity is the no-logs build's 0 - even on a path
+// guarded by `Capacity == 0` and never reached. Routing the modulo through a
+// function makes the divisor an ordinary value rather than a constant
+// expression, so the no-logs build compiles. Callers still guard, so these
+// are never actually entered with cap == 0.
+
+func advance(next int) int {
+	cap := Capacity
+	if cap == 0 {
+		return 0
+	}
+	return (next + 1) % cap
+}
+
+func back(next, i int) int {
+	cap := Capacity
+	if cap == 0 {
+		return 0
+	}
+	return (next - 1 - i + cap*2) % cap
 }

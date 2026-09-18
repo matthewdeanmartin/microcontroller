@@ -127,7 +127,20 @@ func (j *jsonw) status(v *core.Status) {
 	j.fInt64("journal_used", v.JournalUsed)
 	j.fInt64("journal_capacity", v.JournalCap)
 	j.fBool("ledger_balanced", v.LedgerBalance)
+	j.features(v)
 	j.objClose()
+}
+
+// features reports which optional diagnostics this build carries.
+//
+// It lives on /status rather than on a health header because the client needs
+// it before it renders a nav bar, and /status is the one endpoint it can read
+// unauthenticated and before provisioning. A health header only exists on
+// responses the board is still well enough to send, which is the wrong time
+// to be deciding whether a tab exists.
+func (j *jsonw) features(v *core.Status) {
+	j.fBool("logs_enabled", v.LogsEnabled)
+	j.fBool("diag_enabled", v.DiagEnabled)
 }
 
 // statusWithHealth is core.Status embedded plus one field. Written flat,
@@ -148,6 +161,7 @@ func (j *jsonw) statusWithHealth(v *core.Status, health string) {
 	j.fInt64("journal_capacity", v.JournalCap)
 	j.fBool("ledger_balanced", v.LedgerBalance)
 	j.fStr("health", health)
+	j.features(v)
 	j.objClose()
 }
 

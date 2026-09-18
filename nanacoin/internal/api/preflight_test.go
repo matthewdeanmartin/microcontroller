@@ -1,3 +1,5 @@
+//go:build !nanacoin_nologs
+
 package api
 
 import (
