@@ -35,13 +35,25 @@ PAGE = """<!doctype html>
       <h1>Secret<span class="dot">.</span>Messages</h1>
       <p class="sub">Sign in to read what was written for you.</p>
 
-      <form id="login-form" autocomplete="off">
+      <!-- method="post" and no name= attributes, both deliberately.
+
+           A form with neither defaults to GET against the current URL, so if
+           the submit handler ever fails to bind - a JS error higher up the
+           file, an old cached app.js - the browser falls back to native
+           submission and serialises every NAMED field into the query string.
+           That put "?username=alice&password=wonderland" in the address bar
+           and the browser history.
+
+           Dropping name= means there is nothing to serialise, and method=post
+           means a fallback submission cannot become a URL either way. The JS
+           reads these by id. -->
+      <form id="login-form" method="post" action="/api/login" autocomplete="off">
         <label for="u">Who are you</label>
-        <input id="u" name="username" autocapitalize="none" autocorrect="off"
+        <input id="u" autocapitalize="none" autocorrect="off"
                spellcheck="false" required>
 
         <label for="p">Password</label>
-        <input id="p" name="password" type="password" required>
+        <input id="p" type="password" required>
 
         <button type="submit" id="login-btn">Unlock</button>
         <p id="login-error" class="error" hidden></p>
@@ -79,7 +91,9 @@ PAGE = """<!doctype html>
     </div>
 
     <div id="tab-write" hidden>
-      <form id="post-form" class="card">
+      <!-- method="post" for the same reason as the login form: a fallback
+           submission must never be able to put message text in a URL. -->
+      <form id="post-form" class="card" method="post" action="/api/post">
         <label for="subject">Subject</label>
         <input id="subject" maxlength="80" required>
 
@@ -754,7 +768,10 @@ function suggestHost() {
 
 function refreshMastoUi() {
   var wanted = document.getElementById("notify").checked;
-  var connected = MASTO.connected();
+
+  // typeof, not a bare reference: if notify.js is missing, MASTO is undefined
+  // and naming it directly throws rather than yielding undefined.
+  var connected = (typeof MASTO !== "undefined") && MASTO.connected();
 
   var hostBox = document.getElementById("masto-host");
   if (wanted && !connected && !hostBox.value) {
@@ -792,17 +809,29 @@ document.getElementById("masto-connect-btn").addEventListener("click", function 
 
 // Finish an OAuth round trip, if this load is one. Runs before sign-in, so a
 // returning user sees the result whether or not they are still logged in.
-MASTO.completeIfReturning().then(function (message) {
-  if (!message) return;
-  var status = document.getElementById("masto-status");
-  status.textContent = message;
-  status.hidden = false;
-  // The user was mid-compose when they left; put them back on that tab.
-  if (MASTO.connected()) {
-    document.getElementById("notify").checked = true;
-    refreshMastoUi();
-  }
-});
+//
+// Wrapped, because this is the one top-level statement here that depends on
+// another file. If notify.js failed to load - blocked, cached badly, edited
+// into a syntax error - an unguarded call throws a ReferenceError, and every
+// addEventListener BELOW it never runs. The forms would then have no submit
+// handler and the browser would submit them natively, which is precisely the
+// bug this file is trying not to have.
+try {
+  MASTO.completeIfReturning().then(function (message) {
+    if (!message) return;
+    var status = document.getElementById("masto-status");
+    status.textContent = message;
+    status.hidden = false;
+    // The user was mid-compose when they left; put them back on that tab.
+    if (MASTO.connected()) {
+      document.getElementById("notify").checked = true;
+      refreshMastoUi();
+    }
+  });
+} catch (e) {
+  // Mastodon notification is optional; the rest of the app is not.
+  console.error("notify.js unavailable:", e);
+}
 
 document.getElementById("post-form").addEventListener("submit", function (e) {
   e.preventDefault();

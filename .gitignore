@@ -236,3 +236,4 @@ config.py
 # MicroPython firmware images (re-downloadable)
 hello_wifi_py/firmware/
 secret_messages/firmware/
+hello_wifi_s3_py/firmware/

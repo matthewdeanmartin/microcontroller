@@ -1,0 +1,378 @@
+package api
+
+import (
+	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/core"
+	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/eventlog"
+	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/ledger"
+	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/marketplace"
+)
+
+// Encoders for every shape this API emits.
+//
+// These are the hand-written replacement for encoding/json's reflection. Each
+// one writes the same JSON its struct's tags describe, in the same field
+// order, so no client can tell the difference - the tags on the view types in
+// views.go remain the specification and these are the implementation.
+//
+// # Keeping the two in step
+//
+// A field added to a view type and not added here is a silently missing
+// field. That is the real cost of dropping reflection, and it is mitigated
+// two ways: the view type and its encoder are adjacent (views.go and this
+// file), and encoding_test.go round-trips every shape through encoding/json
+// and compares, so a drifted encoder fails a test on a desktop rather than
+// producing a subtly wrong response on a board nobody can attach a debugger
+// to.
+//
+// That test is the reason this is safe to hand-write. Without it, this file
+// would be a slow-motion bug.
+
+func (j *jsonw) userView(v *userView) {
+	j.objOpen()
+	j.fStr("id", string(v.ID))
+	j.fStr("username", v.Username)
+	j.fStr("display_name", v.DisplayName)
+	j.fStr("role", string(v.Role))
+	j.fStr("status", string(v.Status))
+	j.fStr("account", string(v.Account))
+	j.fInt64("created_at", v.CreatedAt)
+	// Balance is a *Amount with omitempty: present only where the caller is
+	// entitled to see it.
+	if v.Balance != nil {
+		j.fInt64("balance", int64(*v.Balance))
+	}
+	j.objClose()
+}
+
+func (j *jsonw) accountView(v *accountView) {
+	j.objOpen()
+	j.fStr("id", string(v.ID))
+	j.fStr("user_id", string(v.UserID))
+	j.fStr("name", v.Name)
+	j.fStr("status", string(v.Status))
+	j.fInt64("balance", int64(v.Balance))
+	j.objClose()
+}
+
+func (j *jsonw) postingView(v *postingView) {
+	j.objOpen()
+	j.fStr("account", string(v.Account))
+	j.fStr("name", v.Name)
+	j.fInt64("amount", int64(v.Amount))
+	j.objClose()
+}
+
+func (j *jsonw) transactionView(v *transactionView) {
+	j.objOpen()
+	j.fStr("id", string(v.ID))
+	j.fStr("kind", string(v.Kind))
+	j.fInt64("created_at", v.CreatedAt)
+	j.fStr("actor", string(v.Actor))
+	j.fStr("description", v.Description)
+	j.fStrOmit("reference", v.Reference)
+	j.fStrOmit("reverses", string(v.Reverses))
+	j.fStrOmit("reversed_by", string(v.ReversedBy))
+
+	j.key("postings")
+	j.arrOpen()
+	for i := range v.Postings {
+		j.comma()
+		j.needComma = false
+		j.postingView(&v.Postings[i])
+	}
+	j.arrClose()
+
+	j.objClose()
+}
+
+func (j *jsonw) listingView(v *listingView) {
+	j.objOpen()
+	j.fStr("id", string(v.ID))
+	j.fStr("seller", string(v.Seller))
+	j.fStr("seller_name", v.SellerName)
+	j.fStr("title", v.Title)
+	j.fStr("description", v.Description)
+	j.fInt64("price", int64(v.Price))
+	j.fStr("status", string(v.Status))
+	j.fInt64("created_at", v.CreatedAt)
+	j.fInt64("updated_at", v.UpdatedAt)
+	j.fStrOmit("buyer", string(v.Buyer))
+	j.fStrOmit("buyer_name", v.BuyerName)
+	j.fStrOmit("sold_tx", string(v.SoldTx))
+	j.fStrOmit("kind", v.Kind)
+	j.fStrOmit("currency", v.Currency)
+	j.fInt64Omit("minor_units", v.MinorUnits)
+	j.objClose()
+}
+
+func (j *jsonw) errorBody(v *errorBody) {
+	j.objOpen()
+	j.fStr("error", v.Error)
+	j.fStr("message", v.Message)
+	j.objClose()
+}
+
+func (j *jsonw) status(v *core.Status) {
+	j.objOpen()
+	j.fBool("provisioned", v.Provisioned)
+	j.fStr("household", v.Household)
+	j.fStr("currency", v.Currency)
+	j.fInt("users", v.Users)
+	j.fInt("transactions", v.Transactions)
+	j.fInt("retained_transactions", v.RetainedTransactions)
+	j.fInt("transaction_capacity", v.TransactionCapacity)
+	j.fUint64("oldest_transaction", uint64(v.OldestTransaction))
+	j.fInt("active_listings", v.ActiveList)
+	j.fInt64("circulation", int64(v.Circulation))
+	j.fInt64("journal_used", v.JournalUsed)
+	j.fInt64("journal_capacity", v.JournalCap)
+	j.fBool("ledger_balanced", v.LedgerBalance)
+	j.objClose()
+}
+
+// statusWithHealth is core.Status embedded plus one field. Written flat,
+// because that is what embedding produces on the wire.
+func (j *jsonw) statusWithHealth(v *core.Status, health string) {
+	j.objOpen()
+	j.fBool("provisioned", v.Provisioned)
+	j.fStr("household", v.Household)
+	j.fStr("currency", v.Currency)
+	j.fInt("users", v.Users)
+	j.fInt("transactions", v.Transactions)
+	j.fInt("retained_transactions", v.RetainedTransactions)
+	j.fInt("transaction_capacity", v.TransactionCapacity)
+	j.fUint64("oldest_transaction", uint64(v.OldestTransaction))
+	j.fInt("active_listings", v.ActiveList)
+	j.fInt64("circulation", int64(v.Circulation))
+	j.fInt64("journal_used", v.JournalUsed)
+	j.fInt64("journal_capacity", v.JournalCap)
+	j.fBool("ledger_balanced", v.LedgerBalance)
+	j.fStr("health", health)
+	j.objClose()
+}
+
+func (j *jsonw) config(v *core.Config) {
+	j.objOpen()
+	j.fStr("household_name", v.HouseholdName)
+	j.fInt64("initial_grant", int64(v.InitialGrant))
+	j.fStr("currency", v.Currency)
+	j.objClose()
+}
+
+func (j *jsonw) event(v *eventlog.Event) {
+	j.objOpen()
+	j.fUint64("seq", v.Seq)
+	j.fInt64("at", v.At)
+	j.fStr("level", v.Level)
+	j.fStr("kind", v.Kind)
+	j.fStr("detail", v.Detail)
+	j.objClose()
+}
+
+func (j *jsonw) diagnostics(v *Diagnostics) {
+	j.objOpen()
+	j.fStr("last_boot", v.LastBoot)
+	j.fBool("crashed", v.Crashed)
+	j.fUint64("boots", uint64(v.Boots))
+	j.fStrOmit("phase", v.Phase)
+	j.fStrOmit("route", v.Route)
+	j.fUint64("served_before_crash", uint64(v.ServedBeforeCrash))
+	j.fUint64("heap_free_at_crash", v.HeapFreeAtCrash)
+	j.fUint64("alloc_failures", uint64(v.AllocFailures))
+	j.fUint64("worst_headroom", v.WorstHeadroom)
+	j.fInt64("uptime_seconds", v.UptimeSeconds)
+	j.fStrOmit("health", v.Health)
+	j.fUint64("free_now", v.FreeNow)
+	j.fUint64("free_oldest", v.FreeOldest)
+	j.fInt64("free_drop", v.FreeDrop)
+	j.fInt("samples", v.Samples)
+	j.fUint64("objects_now", v.ObjectsNow)
+	j.fUint64("frag_now", uint64(v.FragNow))
+	j.fUint64("frag_oldest", uint64(v.FragOldest))
+	j.fUint64("gcs_now", uint64(v.GCsNow))
+	j.fUint64("gc_delta", uint64(v.GCDelta))
+	j.objClose()
+}
+
+func (j *jsonw) authorizeResponse(v *authorizeResponse) {
+	j.objOpen()
+	j.fStr("code", v.Code)
+	j.objClose()
+}
+
+func (j *jsonw) tokenResponse(v *tokenResponse) {
+	j.objOpen()
+	j.fStr("access_token", v.AccessToken)
+	j.fStr("token_type", v.TokenType)
+	j.fInt64("expires_in", v.ExpiresIn)
+	j.key("user")
+	j.needComma = false
+	j.userView(&v.User)
+	j.objClose()
+}
+
+func (j *jsonw) purchaseResponse(v *purchaseResponse) {
+	j.objOpen()
+	j.key("listing")
+	j.needComma = false
+	j.listingView(&v.Listing)
+	j.key("transaction")
+	j.needComma = false
+	j.transactionView(&v.Transaction)
+	j.objClose()
+}
+
+// --- domain helpers ---------------------------------------------------------
+//
+// These build a view and encode it in one step, so a handler never holds a
+// view struct longer than the call. The view types are small and stack-
+// allocated here, which is what keeps the whole path allocation-free.
+
+func (j *jsonw) writeUser(u *userView) { j.userView(u) }
+
+func (j *jsonw) writeTransaction(n lockedNamer, t *ledger.Transaction) {
+	v := n.transaction(t)
+	j.transactionView(&v)
+}
+
+func (j *jsonw) writeListing(n lockedNamer, l *marketplace.Listing) {
+	v := n.listing(l)
+	j.listingView(&v)
+}
+
+// --- idempotent bodies ------------------------------------------------------
+//
+// Legacy allocating helpers for host tests. Board write handlers use the
+// recordBuffer encoders below and copy retained receipts into the fixed cache.
+
+// encodeToBytes runs an encoder into a fresh slice.
+func encodeToBytes(fn func(*jsonw)) []byte {
+	var sink sliceWriter
+	var mem [jsonBufSize]byte
+	j := newJSONW(&sink, mem[:])
+	fn(&j)
+	_ = j.done()
+	return sink.b
+}
+
+// encodeTxnBody is the shape every money-moving endpoint returns.
+func encodeTxnBody(n namer, txn *ledger.Transaction) []byte {
+	v := n.transaction(txn)
+	return encodeToBytes(func(j *jsonw) { j.transactionView(&v) })
+}
+
+// sliceWriter collects output into a growable slice.
+type sliceWriter struct{ b []byte }
+
+func (s *sliceWriter) Write(p []byte) (int, error) {
+	s.b = append(s.b, p...)
+	return len(p), nil
+}
+
+// txnRender writes a transaction straight from its packed record.
+//
+// Nothing here is a Go string: the actor and account names are interned
+// bytes, the memo and reference are arena slices, and the IDs were formatted
+// into the renderer's scratch. A thirty-item list therefore costs no
+// per-record allocation at all - see internal/core/render.go for why that
+// matters on a fragmenting heap.
+func (j *jsonw) txnRender(r *core.TxnRender) {
+	j.objOpen()
+	j.fStrBytes("id", r.ID)
+	j.fStr("kind", r.Kind)
+	j.fInt64("created_at", r.CreatedAt)
+	j.fStrBytes("actor", r.Actor)
+	j.fStrBytes("description", r.Description)
+	j.fStrBytesOmit("reference", r.Reference)
+	j.fStrBytesOmit("reverses", r.Reverses)
+	j.fStrBytesOmit("reversed_by", r.ReversedBy)
+
+	j.key("postings")
+	j.arrOpen()
+	for i := 0; i < r.N; i++ {
+		p := &r.Postings[i]
+		j.comma()
+		j.needComma = false
+		j.objOpen()
+		j.fStrBytes("account", p.Account)
+		j.fStrBytes("name", p.Name)
+		j.fInt64("amount", int64(p.Amount))
+		j.objClose()
+	}
+	j.arrClose()
+
+	j.objClose()
+}
+
+func (j *jsonw) transactionSource(n namer, v *ledger.Transaction) {
+	j.objOpen()
+	j.fStr("id", string(v.ID))
+	j.fStr("kind", string(v.Kind))
+	j.fInt64("created_at", v.CreatedAt)
+	j.fStr("actor", string(v.Actor))
+	j.fStr("description", v.Description)
+	j.fStrOmit("reference", v.Reference)
+	j.fStrOmit("reverses", string(v.Reverses))
+	if reversed, ok := n.svc.ReversalOf(v.ID); ok {
+		j.fStrOmit("reversed_by", string(reversed))
+	}
+
+	j.key("postings")
+	j.arrOpen()
+	for i := range v.Postings {
+		j.comma()
+		j.needComma = false
+		p := &v.Postings[i]
+		j.objOpen()
+		j.fStr("account", string(p.Account))
+		j.fStr("name", n.name(p.Account))
+		j.fInt64("amount", p.Amount)
+		j.objClose()
+	}
+	j.arrClose()
+
+	j.objClose()
+}
+
+func (j *jsonw) listingSource(n namer, v *marketplace.Listing) {
+	j.objOpen()
+	j.fStr("id", string(v.ID))
+	j.fStr("seller", string(v.Seller))
+	j.fStr("seller_name", n.name(v.Seller))
+	j.fStr("title", v.Title)
+	j.fStr("description", v.Description)
+	j.fInt64("price", int64(v.Price))
+	j.fStr("status", string(v.Status))
+	j.fInt64("created_at", v.CreatedAt)
+	j.fInt64("updated_at", v.UpdatedAt)
+	j.fStrOmit("buyer", string(v.Buyer))
+	j.fStrOmit("buyer_name", n.name(v.Buyer))
+	j.fStrOmit("sold_tx", string(v.SoldTx))
+	j.fStrOmit("kind", v.Kind)
+	j.fStrOmit("currency", v.Currency)
+	j.fInt64Omit("minor_units", v.MinorUnits)
+	j.objClose()
+}
+
+func (b *recordBuffer) encodeTransaction(n namer, t *ledger.Transaction) ([]byte, error) {
+	b.n = 0
+	b.json = newJSONW(b, b.jsonMemory[:])
+	b.json.transactionSource(n, t)
+	err := b.json.done()
+	return b.data[:b.n], err
+}
+func (b *recordBuffer) encodePurchase(n namer, l *marketplace.Listing, t *ledger.Transaction) ([]byte, error) {
+	b.n = 0
+	b.json = newJSONW(b, b.jsonMemory[:])
+	j := &b.json
+	j.objOpen()
+	j.key("listing")
+	j.needComma = false
+	j.listingSource(n, l)
+	j.key("transaction")
+	j.needComma = false
+	j.transactionSource(n, t)
+	j.objClose()
+	err := j.done()
+	return b.data[:b.n], err
+}

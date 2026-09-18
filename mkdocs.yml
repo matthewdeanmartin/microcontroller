@@ -45,14 +45,28 @@ nav:
       - "The Board Tab": "secret_messages/diagnostics.md"
       - "Mastodon": "secret_messages/mastodon.md"
       - "Publishing The Front End": "secret_messages/publishing.md"
+  - "ESP32-S3":
+      - "Overview": "esp32s3/index.md"
+  - "TinyGo and NanaCoin":
+      - "Overview": "tinygo/index.md"
+      - "How It Works": "tinygo/how_it_works.md"
+      - "Setup": "tinygo/setup.md"
+      - "The Workflow": "tinygo/workflow.md"
+      - "Memory": "tinygo/memory.md"
+      - "The Web Framework": "tinygo/web_framework.md"
+      - "NanaCoin's Domain": "tinygo/nanacoin.md"
+      - "Storage and Retries": "tinygo/storage.md"
+      - "Concurrency and Cores": "tinygo/concurrency.md"
+      - "Diagnostics and Load Tests": "tinygo/diagnostics.md"
 
 validation:
   nav:
     omitted_files: warn
-  omitted_files: warn
-  absolute_links: warn
-  unrecognized_links: warn
-  anchors: warn
+  links:
+    not_found: warn
+    absolute_links: warn
+    unrecognized_links: warn
+    anchors: warn
 
 plugins:
   - search

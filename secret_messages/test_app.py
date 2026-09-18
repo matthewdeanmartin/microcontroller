@@ -16,6 +16,7 @@ import app
 import compat
 import crypto
 import store as store_module
+import ui
 
 PASS = 0
 FAIL = 0
@@ -381,6 +382,53 @@ check("the DM is direct, never public",
       '"direct"' in code and '"public"' not in code)
 check("the token lives in sessionStorage only",
       "sessionStorage" in code and "localStorage" not in code)
+
+
+# -------------------------------------------------------------- the forms
+
+section("forms cannot leak into the URL")
+
+# A form with no method= defaults to GET against the current URL. If the JS
+# submit handler ever fails to bind, the browser submits natively and puts
+# every NAMED field in the query string - which is how
+# "?username=alice&password=wonderland" ended up in the address bar and in
+# browser history. Two independent guards, both checked here.
+
+page = ui.PAGE
+
+import re as _re
+
+forms = _re.findall(r"<form[^>]*>", page)
+check("every form declares method=post",
+      all('method="post"' in f for f in forms))
+check("there is more than one form to check", len(forms) >= 2)
+
+# The password field must not be serialisable at all.
+login_form = page[page.index('id="login-form"'):page.index("</form>")]
+check("the password input has no name attribute",
+      'type="password"' in login_form and
+      not _re.search(r'<input[^>]*type="password"[^>]*name=', login_form))
+check("the username input has no name attribute",
+      not _re.search(r'<input[^>]*id="u"[^>]*name=', login_form))
+check("no input anywhere is named username or password",
+      'name="username"' not in page and 'name="password"' not in page)
+
+# The radio group legitimately uses name= - that is how a radio group is
+# formed at all - but it carries no secret and its form is method=post. Only
+# form controls matter here, so <meta name=...> is excluded.
+control_names = set(_re.findall(r'<(?:input|textarea|select)[^>]*name="([^"]+)"', page))
+check("the radio group is the only named form control", control_names == {"vis"})
+
+# A ReferenceError at the top level would stop every addEventListener below it
+# from running - which is what makes a native submission possible in the first
+# place. The one top-level statement that depends on notify.js must be guarded.
+app_js = ui.APP_JS
+guarded = app_js[app_js.index("MASTO.completeIfReturning") - 400:
+                 app_js.index("MASTO.completeIfReturning")]
+check("the cross-file call at top level is inside a try",
+      "try {" in guarded)
+check("refreshMastoUi does not name MASTO unguarded",
+      'typeof MASTO !== "undefined"' in app_js)
 
 
 # ------------------------------------------------------------------ result

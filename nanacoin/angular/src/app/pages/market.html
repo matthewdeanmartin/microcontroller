@@ -1,0 +1,92 @@
+<h2>For sale</h2>
+
+@if (session.forSale().length === 0) {
+  <p class="muted">Nothing for sale right now.</p>
+} @else {
+  <div class="cards">
+    @for (l of session.forSale(); track l.id) {
+      <article class="card">
+        <h3>{{ l.title }}</h3>
+
+        @if (l.description) {
+          <p class="card__desc">{{ l.description }}</p>
+        }
+
+        @if (l.kind === 'currency' && l.currency && l.minor_units) {
+          <p class="card__note">
+            Offers {{ cashAmount(l) }} in cash. NanaCoin records only the coin
+            side — the cash is between you and the seller.
+          </p>
+        }
+
+        <p class="card__meta">
+          <strong>{{ l.price }} {{ l.price === 1 ? 'coin' : 'coins' }}</strong>
+          · {{ l.seller_name }}
+        </p>
+
+        @if (mine(l)) {
+          <button class="btn btn--quiet" (click)="cancel(l)">Cancel listing</button>
+        } @else {
+          <button
+            class="btn"
+            (click)="buy(l)"
+            [disabled]="!affordable(l) || buying() !== null"
+            [title]="affordable(l) ? '' : 'You do not have enough coins.'"
+          >
+            @if (buying() === l.id) {
+              Buying…
+            } @else {
+              Buy for {{ l.price }}
+            }
+          </button>
+        }
+      </article>
+    }
+  </div>
+}
+
+<details class="disclosure">
+  <summary>Sell something</summary>
+  <form (ngSubmit)="post()">
+    <label>
+      What are you offering?
+      <input name="title" [(ngModel)]="title" required maxlength="80"
+             placeholder="One hour of Switch time" />
+    </label>
+    <label>
+      Details
+      <input name="description" [(ngModel)]="description" maxlength="500"
+             placeholder="Uninterrupted" />
+    </label>
+    <label>
+      Price in coins
+      <input name="price" type="number" min="1" step="1" [(ngModel)]="price" required />
+    </label>
+    <button class="btn" type="submit" [disabled]="posting()">
+      {{ posting() ? 'Listing…' : 'List it' }}
+    </button>
+  </form>
+</details>
+
+@if (session.closed().length > 0) {
+  <details class="disclosure">
+    <summary>Sold and cancelled ({{ session.closed().length }})</summary>
+    <div class="cards">
+      @for (l of session.closed(); track l.id) {
+        <article class="card card--closed">
+          <h3>{{ l.title }}</h3>
+          <p class="card__meta">
+            <strong>{{ l.price }} coins</strong> · {{ l.seller_name }}
+          </p>
+          <p class="card__status">
+            @if (l.status === 'SOLD') {
+              Sold to {{ l.buyer_name ?? 'someone' }}
+            } @else {
+              Cancelled
+            }
+          </p>
+        </article>
+      }
+    </div>
+  </details>
+}

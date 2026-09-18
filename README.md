@@ -1,7 +1,11 @@
 # microcontroller
 
-Microcontroller experiments, currently a **DiGiYes ESP32-S2 Mini V1.0.0**
-(ESP32-S2FN4R2 — 4MB flash, 2MB PSRAM, 2.4GHz WiFi, native USB).
+Microcontroller experiments, on two boards:
+
+| Board | Chip | Notable |
+|---|---|---|
+| DiGiYes ESP32-S2 Mini V1.0.0 | ESP32-S2FN4R2 | 4MB flash, 2MB PSRAM, native USB only |
+| ESP32-S3-N16R8 | ESP32-S3 | 16MB flash, 8MB octal PSRAM, dual-core, **BLE**, UART bridge |
 
 Focus is **self-hosted web things**: small always-on servers on cheap hardware.
 No soldering, no GPIO wiring.
@@ -13,8 +17,13 @@ No soldering, no GPIO wiring.
 | [`hello_wifi`](hello_wifi/) | C / ESP-IDF. Status page over WiFi. |
 | [`hello_wifi_py`](hello_wifi_py/) | MicroPython. Same page, plus a local preview and a 3-second deploy. |
 | [`secret_messages`](secret_messages/) | MicroPython. A pastebin for the house — each message encrypted so only its intended readers can open it. Mastodon DMs the recipient a link, with no key on the board. |
+| [`hello_wifi_s3_py`](hello_wifi_s3_py/) | MicroPython on the **S3**. A live system dashboard — board serves JSON, browser draws the charts — plus the RGB LED as a status indicator. |
 
 ## Docs
+
+The Go projects are [`nanacoin`](nanacoin/), a TinyGo household currency and
+marketplace for the ESP32-S3, and [`nanacoin_load`](nanacoin_load/), its separate
+Python 3.14/Locust load-test lab with HTML reports.
 
 Full write-up in [`docs/`](docs/) — build with `cd docs && make serve`.
 
@@ -24,6 +33,9 @@ Full write-up in [`docs/`](docs/) — build with `cd docs && make serve`.
   the REPL
 - **Secret Messages** — the encryption scheme and why it is not public-key
   crypto, the board diagnostics tab, and using Mastodon as a doorbell
+- **[TinyGo and NanaCoin](docs/tinygo/index.md)** — firmware development for
+  application programmers, the web framework, household domain, memory,
+  storage, concurrency and load testing
 
 ## Quick start
 
@@ -76,7 +88,8 @@ because "only these people can read it" turned out to be the interesting part.
 
 ## Constraints worth remembering
 
-The board is a tiny always-on computer, not a server:
+The original MicroPython examples have these practical constraints (the
+TinyGo application's budgets and concurrency are documented separately):
 
 - **~1MB RAM** for your code after the interpreter
 - **One request at a time** — fine for a household, wrong for real traffic

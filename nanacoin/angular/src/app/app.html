@@ -1,0 +1,91 @@
+<app-toast-list />
+
+@switch (phase()) {
+  @case ('loading') {
+    <section class="screen screen--centred">
+      <p class="muted">Looking for NanaCoin…</p>
+    </section>
+  }
+
+  @case ('connect') {
+    <section class="screen screen--centred">
+      <app-connect-form
+        [reason]="connectReason()"
+        (connected)="onConnected()"
+        (showLogs)="showLogs()"
+      />
+    </section>
+  }
+
+  @case ('logs') {
+    <div class="screen">
+      <header class="topbar">
+        <div class="topbar__who"><strong>Server logs</strong></div>
+        <div class="topbar__actions">
+          <button class="btn btn--quiet btn--small" (click)="leaveLogs()">Back</button>
+        </div>
+      </header>
+      <main>
+        <app-logs />
+      </main>
+    </div>
+  }
+
+  @case ('setup') {
+    <section class="screen screen--centred">
+      <app-setup-form (done)="onProvisioned()" />
+    </section>
+  }
+
+  @case ('login') {
+    <section class="screen screen--centred">
+      <app-login-form [household]="household()" (done)="onLoggedIn()" />
+    </section>
+  }
+
+  @case ('app') {
+    <div class="screen">
+      <header class="topbar">
+        <div class="topbar__who">
+          <strong>{{ session.me()?.display_name }}</strong>
+          @if (session.isNana()) {
+            <span class="tag">nana</span>
+          }
+        </div>
+
+        <div class="topbar__balance" [attr.aria-label]="session.balance() + ' coins'">
+          {{ session.balance() }}
+          <span class="topbar__unit">{{ session.balance() === 1 ? 'coin' : 'coins' }}</span>
+        </div>
+
+        <div class="topbar__actions">
+          <button class="btn btn--quiet btn--small" (click)="refresh()" [disabled]="session.loading()">
+            {{ session.loading() ? 'Refreshing…' : 'Refresh' }}
+          </button>
+          <button class="btn btn--quiet btn--small" (click)="logout()">Log out</button>
+        </div>
+      </header>
+
+      <nav class="tabs" aria-label="Sections">
+        <a class="tab" routerLink="/market" routerLinkActive="tab--active">Market</a>
+        <a class="tab" routerLink="/send" routerLinkActive="tab--active">Send</a>
+        <a class="tab" routerLink="/history" routerLinkActive="tab--active">History</a>
+        @if (session.isNana()) {
+          <a class="tab" routerLink="/nana" routerLinkActive="tab--active">Household</a>
+        }
+        <a class="tab" routerLink="/logs" routerLinkActive="tab--active">Logs</a>
+      </nav>
+
+      <main>
+        <router-outlet />
+      </main>
+
+      <footer class="apinote">
+        Connected to <code>{{ apiBase.description() }}</code>
+        <button class="btn btn--quiet btn--small" (click)="changeServer()">
+          Change server
+        </button>
+      </footer>
+    </div>
+  }
+}
