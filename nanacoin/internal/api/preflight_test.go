@@ -273,18 +273,21 @@ func TestHealthHeaderOnEveryResponse(t *testing.T) {
 
 	// A host that reports health, as the board does.
 	log := eventlog.New(func() int64 { return 0 })
-	log.SetHealth(func() string { return "heap inuse 164000, delta 0" })
 
 	svc, err := core.New(memory.New(), core.Options{})
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
 	}
 	sessions := auth.NewStore(auth.Options{})
-	srv := NewServer(svc, sessions, Config{
+	server := NewServer(svc, sessions, Config{
 		AllowedOrigins: []string{"https://nanacoin.example.net"},
 		AllowProvision: true,
 		Log:            log,
-	}).Handler()
+	})
+	// Registered on the server, not on the log: the header must survive a
+	// build with no event log at all.
+	server.SetHealth(func() string { return "heap inuse 164000, delta 0" })
+	srv := server.Handler()
 
 	const origin = "https://nanacoin.example.net"
 

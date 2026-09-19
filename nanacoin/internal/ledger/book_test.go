@@ -400,3 +400,105 @@ func TestGetRejectsBadIDs(t *testing.T) {
 		t.Error("Get(txn-1) did not find the record that exists")
 	}
 }
+
+// Currencies must balance separately, or the book can be broken in a way that
+// looks fine.
+//
+// The failure this guards: 100 coins leave an account and 100 cents arrive in
+// another. A single grand total is zero, so a combined check calls that
+// balanced - and the household has lost 100 coins and gained a dollar from
+// nowhere. "Every coin is accounted for" and "every dollar is accounted for"
+// have to be two statements.
+func TestCrossCurrencyCannotCancel(t *testing.T) {
+	txn := &Transaction{
+		ID:        TransactionIDFor(1),
+		Kind:      KindTransfer,
+		CreatedAt: 1,
+		Actor:     "user-1",
+		Postings: []Posting{
+			{Account: "account-a", Amount: -100, Currency: NANA},
+			{Account: "account-b", Amount: 100, Currency: USD},
+		},
+	}
+
+	// The naive combined total is zero...
+	var combined Amount
+	for _, p := range txn.Postings {
+		combined += p.Amount
+	}
+	if combined != 0 {
+		t.Fatalf("test setup is wrong: combined total is %d, wanted a deceptive zero", combined)
+	}
+
+	// ...but neither currency balances on its own.
+	if txn.Sum(NANA) == 0 {
+		t.Error("NanaCoin side sums to zero; the currencies were allowed to cancel")
+	}
+	if txn.Sum(USD) == 0 {
+		t.Error("USD side sums to zero; the currencies were allowed to cancel")
+	}
+
+	b := NewBook()
+	if err := b.Validate(txn, false); err == nil {
+		t.Fatal("Validate accepted a transaction whose currencies cancel each other")
+	}
+}
+
+// A single-currency transaction still balances, and a USD one balances in USD.
+func TestSingleCurrencyTransactionsBalance(t *testing.T) {
+	for _, c := range []Currency{NANA, USD} {
+		txn := &Transaction{
+			ID:        TransactionIDFor(1),
+			Kind:      KindTransfer,
+			CreatedAt: 1,
+			Actor:     "user-1",
+			Postings: []Posting{
+				{Account: "account-a", Amount: -50, Currency: c},
+				{Account: "account-b", Amount: 50, Currency: c},
+			},
+		}
+		if got := txn.Sum(c); got != 0 {
+			t.Errorf("%s transaction sums to %d, want 0", c, got)
+		}
+		// And contributes nothing to the other currency's total.
+		other := NANA
+		if c == NANA {
+			other = USD
+		}
+		if got := txn.Sum(other); got != 0 {
+			t.Errorf("%s transaction contributed %d to %s", c, got, other)
+		}
+	}
+}
+
+// Currency survives the pack/unpack round trip, which is what replay depends
+// on: a USD posting that comes back as NanaCoin would silently rewrite the
+// household's money after a reboot.
+func TestCurrencySurvivesPacking(t *testing.T) {
+	strs, arena := NewStrings(), NewArena()
+	original := &Transaction{
+		ID:        TransactionIDFor(1),
+		Kind:      KindTransfer,
+		CreatedAt: 1,
+		Actor:     "user-1",
+		Postings: []Posting{
+			{Account: "account-a", Amount: -500, Currency: USD},
+			{Account: "account-b", Amount: 500, Currency: USD},
+		},
+	}
+
+	packed, ok := Pack(original, strs, arena, 1)
+	if !ok {
+		t.Fatal("Pack refused a two-posting USD transaction")
+	}
+	back := Unpack(&packed, strs, arena)
+
+	if len(back.Postings) != 2 {
+		t.Fatalf("got %d postings back, want 2", len(back.Postings))
+	}
+	for i, p := range back.Postings {
+		if p.Currency != USD {
+			t.Errorf("posting %d came back as %s, want USD", i, p.Currency)
+		}
+	}
+}

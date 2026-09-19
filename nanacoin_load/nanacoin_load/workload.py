@@ -264,6 +264,55 @@ class NanaUser(HttpUser):
                     uuid.uuid4().hex,
                     "purchase",
                 )
+        elif SCENARIO == "seed":
+            # The write mix the Angular "add a year of history" button makes.
+            #
+            # That button drives the ordinary API from the browser, so a
+            # household seeding itself looks exactly like this to the board:
+            # a listing, a transfer, a purchase and an offer, repeated a few
+            # hundred times. The question this scenario answers is whether a
+            # board survives someone pressing it - which is not something the
+            # browser can tell you, because a browser that gets no answer
+            # cannot say whether the board is busy or gone.
+            seller, buyer = FIXTURE["members"]
+
+            listing = self.call(
+                "POST",
+                "/api/v1/listings",
+                {"title": "Do the dishes", "description": "Chores", "price": 5},
+                seller,
+                201,
+                name="seed-listing",
+            )
+            self.call(
+                "POST",
+                "/api/v1/transfers",
+                {"to": buyer["account"], "amount": 1, "memo": "Take out the trash"},
+                seller,
+                201,
+                uuid.uuid4().hex,
+                "seed-transfer",
+            )
+            if listing:
+                offer = self.call(
+                    "POST",
+                    f"/api/v1/listings/{listing['id']}/offers",
+                    {"amount": 3, "message": "Would you take this?"},
+                    buyer,
+                    201,
+                    uuid.uuid4().hex,
+                    "seed-offer",
+                )
+                if offer:
+                    self.call(
+                        "POST",
+                        f"/api/v1/offers/{offer['id']}/accept",
+                        {},
+                        seller,
+                        201,
+                        uuid.uuid4().hex,
+                        "seed-accept",
+                    )
         elif SCENARIO == "auth":
             verifier, challenge = pkce()
             username, password = credentials()

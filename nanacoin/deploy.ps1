@@ -34,6 +34,16 @@ param(
     # RTS/DTR, so esptool enters the bootloader by itself - no button dance.
     [string]$Port = "COM8",
 
+    # Build tags. The diagnostics are the board's largest optional cost:
+    # nanacoin_nologs drops the 58-entry event ring (4,640 bytes measured) and
+    # with it /logs, which is the most allocation-heavy endpoint in the API at
+    # ~43KB and 286 allocations per request. nanacoin_nodiag drops /diag.
+    #
+    # Left on by default, because a board you cannot ask what it has been
+    # doing is a board you debug with a USB cable. Turn them off when the
+    # heap matters more than the diagnostics.
+    [string]$Tags = "",
+
     [string]$Target = "esp32s3-generic",
     [int]$WatchSeconds = 90,
     [switch]$NoWatch
@@ -98,6 +108,10 @@ $buildArgs = @(
     "-o", $bin,
     "-ldflags", $ldflags
 )
+if ($Tags) {
+    $buildArgs += @("-tags", $Tags)
+    Write-Host "Build tags: $Tags" -ForegroundColor Cyan
+}
 $buildArgs += "./cmd/nanacoin-esp32"
 & tinygo @buildArgs
 if ($LASTEXITCODE -ne 0) { throw "build failed" }

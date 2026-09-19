@@ -13,6 +13,7 @@ import { LoginForm } from './pages/login-form';
 import { LogsPage } from './pages/logs';
 import { Session } from './api/session';
 import { SetupForm } from './pages/setup-form';
+import { DialogHost } from './ui/dialog-host';
 import { ToastList } from './ui/toast-list';
 import { Toasts } from './ui/toasts';
 
@@ -29,6 +30,7 @@ type Phase = 'loading' | 'connect' | 'setup' | 'login' | 'app' | 'logs';
     LogsPage,
     SetupForm,
     ToastList,
+    DialogHost,
   ],
   templateUrl: './app.html',
   styleUrl: './app.css',

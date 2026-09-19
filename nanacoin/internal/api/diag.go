@@ -110,7 +110,7 @@ func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
 		d = s.diag()
 	}
 	if d.Health == "" {
-		d.Health = s.log.Health()
+		d.Health = s.healthLine()
 	}
 	encodeJSON(w, http.StatusOK, func(j *jsonw) { j.diagnostics(&d) })
 }

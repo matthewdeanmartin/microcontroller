@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / ".state" / "fixture.json"
 REPORTS = ROOT / "reports"
 ORIGIN = os.getenv("NANA_ORIGIN", "http://localhost:4200")
-SCENARIOS = ("status", "browse", "ledger", "write", "replay", "market", "auth")
+SCENARIOS = ("status", "browse", "ledger", "write", "replay", "market", "auth", "seed")
 
 
 def health(text):

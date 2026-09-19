@@ -100,6 +100,10 @@ func encodeTransaction(b []byte, t *ledger.Transaction) []byte {
 	for i := range t.Postings {
 		b = putStr(b, string(t.Postings[i].Account))
 		b = putI64(b, int64(t.Postings[i].Amount))
+		// Appended per posting. Without it a USD leg replays as NanaCoin and
+		// the household's money is silently rewritten at the next reboot -
+		// the worst kind of bug this format can have, because nothing fails.
+		b = putU32(b, uint32(t.Postings[i].Currency))
 	}
 	return b
 }
@@ -131,6 +135,10 @@ func decodeTransaction(r *reader, t *ledger.Transaction) {
 	for i := 0; i < n; i++ {
 		t.Postings[i].Account = ledger.AccountID(r.str())
 		t.Postings[i].Amount = ledger.Amount(r.i64())
+		// A record written before currencies existed has no more bytes here;
+		// the reader yields zero, which is NanaCoin - exactly what those
+		// postings were.
+		t.Postings[i].Currency = ledger.Currency(r.u32())
 	}
 }
 
@@ -161,6 +169,10 @@ func encodeListing(b []byte, l *marketplace.Listing) []byte {
 	b = putStr(b, l.Kind)
 	b = putStr(b, l.Currency)
 	b = putI64(b, l.MinorUnits)
+	// Appended last on purpose: a listing written before two-way listings
+	// existed has no side field, and a reader that runs out of bytes leaves
+	// it zero - which is SELL, what those listings were.
+	b = putU32(b, uint32(l.Side))
 	return b
 }
 
@@ -179,6 +191,7 @@ func decodeListing(r *reader, l *marketplace.Listing) {
 	l.Kind = r.str()
 	l.Currency = r.str()
 	l.MinorUnits = r.i64()
+	l.Side = marketplace.Side(r.u32())
 }
 
 func encodeListingCreated(buf []byte, e *listingCreatedEvent) []byte {
@@ -235,6 +248,89 @@ func decodeListingPurchased(p []byte, e *listingPurchasedEvent) error {
 	return r.done()
 }
 
+// --- offers -----------------------------------------------------------------
+
+func encodeOffer(b []byte, o *marketplace.Offer) []byte {
+	b = putStr(b, string(o.ID))
+	b = putStr(b, string(o.Listing))
+	b = putStr(b, string(o.Offerer))
+	b = putI64(b, int64(o.Amount))
+	b = putStr(b, o.Message)
+	b = putStr(b, string(o.Status))
+	b = putI64(b, o.CreatedAt)
+	b = putI64(b, o.UpdatedAt)
+	b = putStr(b, string(o.SettledTx))
+	b = putI64(b, o.SettlesAt)
+	return b
+}
+
+func decodeOffer(r *reader, o *marketplace.Offer) {
+	o.ID = ledger.OfferID(r.str())
+	o.Listing = ledger.ListingID(r.str())
+	o.Offerer = ledger.AccountID(r.str())
+	o.Amount = ledger.Amount(r.i64())
+	o.Message = r.str()
+	o.Status = marketplace.OfferStatus(r.str())
+	o.CreatedAt = r.i64()
+	o.UpdatedAt = r.i64()
+	o.SettledTx = ledger.TransactionID(r.str())
+	o.SettlesAt = r.i64()
+}
+
+func encodeOfferCreated(buf []byte, e *offerCreatedEvent) []byte {
+	return encodeOffer(buf, &e.Offer)
+}
+
+func decodeOfferCreated(p []byte, e *offerCreatedEvent) error {
+	r := newReader(p)
+	decodeOffer(r, &e.Offer)
+	return r.done()
+}
+
+func encodeOfferAccepted(buf []byte, e *offerAcceptedEvent) []byte {
+	b := buf
+	b = putStr(b, string(e.OfferID))
+	b = putStr(b, string(e.ListingID))
+	b = putStr(b, string(e.Buyer))
+	b = putI64(b, e.SettlesAt)
+	b = putI64(b, e.UpdatedAt)
+	b = encodeTransaction(b, &e.Txn)
+	return b
+}
+
+func decodeOfferAccepted(p []byte, e *offerAcceptedEvent) error {
+	r := newReader(p)
+	e.OfferID = ledger.OfferID(r.str())
+	e.ListingID = ledger.ListingID(r.str())
+	e.Buyer = ledger.AccountID(r.str())
+	e.SettlesAt = r.i64()
+	e.UpdatedAt = r.i64()
+	decodeTransaction(r, &e.Txn)
+	return r.done()
+}
+
+func encodeOfferUpdated(buf []byte, e *offerUpdatedEvent) []byte {
+	b := buf
+	b = putStr(b, string(e.ID))
+	b = putStr(b, string(e.Status))
+	b = putI64(b, e.UpdatedAt)
+	var reopen uint32
+	if e.Reopen {
+		reopen = 1
+	}
+	b = putU32(b, reopen)
+	return b
+}
+
+func decodeOfferUpdated(p []byte, e *offerUpdatedEvent) error {
+	r := newReader(p)
+	e.ID = ledger.OfferID(r.str())
+	e.Status = marketplace.OfferStatus(r.str())
+	e.UpdatedAt = r.i64()
+	e.Reopen = r.u32() == 1
+	return r.done()
+}
+
 // --- config -----------------------------------------------------------------
 
 func encodeConfigUpdated(buf []byte, e *configUpdatedEvent) []byte {
@@ -242,6 +338,7 @@ func encodeConfigUpdated(buf []byte, e *configUpdatedEvent) []byte {
 	b = putStr(b, e.Config.HouseholdName)
 	b = putI64(b, int64(e.Config.InitialGrant))
 	b = putStr(b, e.Config.Currency)
+	b = putI64(b, e.Config.OfferSettlesAfter)
 	return b
 }
 
@@ -250,6 +347,7 @@ func decodeConfigUpdated(p []byte, e *configUpdatedEvent) error {
 	e.Config.HouseholdName = r.str()
 	e.Config.InitialGrant = ledger.Amount(r.i64())
 	e.Config.Currency = r.str()
+	e.Config.OfferSettlesAfter = r.i64()
 	return r.done()
 }
 
@@ -276,5 +374,98 @@ func decodeIdempotency(p []byte, e *idempotencyEvent) error {
 	e.Endpoint = r.str()
 	e.Result = r.bytes()
 	e.At = r.i64()
+	return r.done()
+}
+
+// --- quotes -----------------------------------------------------------------
+
+func encodeQuote(b []byte, q *marketplace.Quote) []byte {
+	b = putStr(b, string(q.ID))
+	b = putStr(b, string(q.Maker))
+	b = putU32(b, uint32(q.Side))
+	b = putI64(b, int64(q.CentsPerCoin))
+	b = putI64(b, int64(q.Coins))
+	b = putStr(b, string(q.Status))
+	b = putI64(b, q.CreatedAt)
+	b = putI64(b, q.UpdatedAt)
+	b = putI64(b, q.ExpiresAt)
+	b = putStr(b, string(q.Taker))
+	b = putStr(b, string(q.CoinTx))
+	b = putStr(b, string(q.CashTx))
+	return b
+}
+
+func decodeQuote(r *reader, q *marketplace.Quote) {
+	q.ID = ledger.QuoteID(r.str())
+	q.Maker = ledger.AccountID(r.str())
+	q.Side = marketplace.QuoteSide(r.u32())
+	q.CentsPerCoin = ledger.Amount(r.i64())
+	q.Coins = ledger.Amount(r.i64())
+	q.Status = marketplace.QuoteStatus(r.str())
+	q.CreatedAt = r.i64()
+	q.UpdatedAt = r.i64()
+	q.ExpiresAt = r.i64()
+	q.Taker = ledger.AccountID(r.str())
+	q.CoinTx = ledger.TransactionID(r.str())
+	q.CashTx = ledger.TransactionID(r.str())
+}
+
+func encodeQuoteCreated(buf []byte, e *quoteCreatedEvent) []byte {
+	return encodeQuote(buf, &e.Quote)
+}
+
+func decodeQuoteCreated(p []byte, e *quoteCreatedEvent) error {
+	r := newReader(p)
+	decodeQuote(r, &e.Quote)
+	return r.done()
+}
+
+func encodeQuoteTaken(buf []byte, e *quoteTakenEvent) []byte {
+	b := buf
+	b = putStr(b, string(e.QuoteID))
+	b = putStr(b, string(e.Taker))
+	b = putI64(b, e.UpdatedAt)
+	b = encodeTransaction(b, &e.CoinTxn)
+	return b
+}
+
+func decodeQuoteTaken(p []byte, e *quoteTakenEvent) error {
+	r := newReader(p)
+	e.QuoteID = ledger.QuoteID(r.str())
+	e.Taker = ledger.AccountID(r.str())
+	e.UpdatedAt = r.i64()
+	decodeTransaction(r, &e.CoinTxn)
+	return r.done()
+}
+
+func encodeQuoteSettled(buf []byte, e *quoteSettledEvent) []byte {
+	b := buf
+	b = putStr(b, string(e.QuoteID))
+	b = putI64(b, e.UpdatedAt)
+	b = encodeTransaction(b, &e.CashTxn)
+	return b
+}
+
+func decodeQuoteSettled(p []byte, e *quoteSettledEvent) error {
+	r := newReader(p)
+	e.QuoteID = ledger.QuoteID(r.str())
+	e.UpdatedAt = r.i64()
+	decodeTransaction(r, &e.CashTxn)
+	return r.done()
+}
+
+func encodeQuoteUpdated(buf []byte, e *quoteUpdatedEvent) []byte {
+	b := buf
+	b = putStr(b, string(e.ID))
+	b = putStr(b, string(e.Status))
+	b = putI64(b, e.UpdatedAt)
+	return b
+}
+
+func decodeQuoteUpdated(p []byte, e *quoteUpdatedEvent) error {
+	r := newReader(p)
+	e.ID = ledger.QuoteID(r.str())
+	e.Status = marketplace.QuoteStatus(r.str())
+	e.UpdatedAt = r.i64()
 	return r.done()
 }

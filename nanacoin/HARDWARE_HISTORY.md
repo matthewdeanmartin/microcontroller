@@ -342,3 +342,51 @@ The board also prints a served-request count every ten requests, because "still
 working" and "silently stopped accepting" are otherwise indistinguishable from
 the outside.
 
+## 2026-09-19 — the TCP pool was starving the heap
+
+`poolConns` was 8, holding `8 x (TxBufSize 2048 + RxBufSize 1024)` = **24 KB**
+of buffers on a board with about 10 KB free after setup. The pool was more
+than twice the entire remaining heap.
+
+The earlier note claimed 8 was "measured": that it served hundreds of requests
+before a burst outran reclamation, and recovered by itself. That was true of
+*sequential* traffic and false of the traffic the board actually gets. One
+browsing user issues five requests at once, which is what a page load is.
+
+Measured with Locust (`nanacoin_load`), browse scenario:
+
+| | poolConns=8 | poolConns=5 |
+|---|---|---|
+| 1 user, 45s | 60 requests, **33% failed** | 230 requests, **0 failed** |
+| p50 / p99 | 350 ms / 10,000 ms | 210 ms / **440 ms** |
+| min free heap | **672 bytes** | 8,224 bytes |
+| after the run | dead; needed a physical reset | healthy |
+| ramp to 8 users | not attempted | 1,215 requests, 4.4% failed, survived |
+
+At 8 slots a single user drove the heap to 672 bytes and the board stopped
+accepting connections. It did **not** recover on its own: twenty minutes later
+it was still unresponsive, with COM9 still enumerated and the serial console
+silent - alive, but unable to serve. A reset over the CH343 bridge brought it
+back.
+
+At 5 slots every one of the seven load scenarios passes with no failures, and
+the ledger balances after 218 transactions.
+
+### Why the failures looked like a crash rather than backpressure
+
+The firmware has a proper refusal path - 503 with `Retry-After: 1` - but it
+never fired, because it lives *after* the connection is accepted. The failures
+were all `ConnectTimeout`: the SYN got no reply at all.
+
+`lneto`'s listener does send an RST when the pool is empty, which is a clean
+"connection refused". But its `RSTQueue` is `buf [4]rstEntry` and documented to
+"silently drop if the queue is full". So the board refuses the first few excess
+connections and goes silent for the rest - and a client cannot tell that from a
+dead board. Worth enlarging: 16 entries would cost about 170 bytes against the
+24 KB the pool was already holding.
+
+### If this is raised again
+
+Do not raise `poolConns` without re-running `browse` at one user and checking
+`min_free`. Sequential request counts say nothing about the concurrent burst a
+single page load produces, and that is the case that kills it.

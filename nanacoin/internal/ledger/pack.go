@@ -62,6 +62,7 @@ func Pack(t *Transaction, strs *Strings, arena *Arena, seq uint32) (PackedTransa
 	for i, post := range t.Postings {
 		p.Accounts[i] = strs.Intern(string(post.Account))
 		p.Amounts[i] = post.Amount
+		p.Currencies[i] = post.Currency
 	}
 	return p, true
 }
@@ -95,8 +96,9 @@ func Unpack(p *PackedTransaction, strs *Strings, arena *Arena) *Transaction {
 	t.Postings = make([]Posting, n)
 	for i := 0; i < n; i++ {
 		t.Postings[i] = Posting{
-			Account: AccountID(strs.Lookup(p.Accounts[i])),
-			Amount:  p.Amounts[i],
+			Currency: p.Currencies[i],
+			Account:  AccountID(strs.Lookup(p.Accounts[i])),
+			Amount:   p.Amounts[i],
 		}
 	}
 	return t
@@ -114,11 +116,16 @@ func (p *PackedTransaction) Affects(account Ref) bool {
 	return false
 }
 
-// Sum totals the postings, for the invariant check.
-func (p *PackedTransaction) Sum() Amount {
+// Sum totals the postings in one currency, for the invariant check.
+//
+// Per currency: see Transaction.Sum. A record whose coin legs balance and
+// whose dollar legs do not is broken, and a combined total would hide it.
+func (p *PackedTransaction) Sum(c Currency) Amount {
 	var total Amount
 	for i := 0; i < MaxInlinePostings; i++ {
-		total += p.Amounts[i]
+		if p.Currencies[i] == c {
+			total += p.Amounts[i]
+		}
 	}
 	return total
 }

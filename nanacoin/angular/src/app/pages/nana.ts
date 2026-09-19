@@ -9,6 +9,8 @@ import { FormsModule } from '@angular/forms';
 import { Transaction } from '../api/models';
 import { NanacoinService, newIdempotencyKey } from '../api/nanacoin.service';
 import { Session } from '../api/session';
+import { Dialogs } from '../ui/dialog';
+import { LiveSeeder, defaultSeed } from '../demo/seed-live';
 import { Toasts } from '../ui/toasts';
 
 @Component({
@@ -19,6 +21,8 @@ import { Toasts } from '../ui/toasts';
 export class NanaPage {
   private readonly api = inject(NanacoinService);
   private readonly toasts = inject(Toasts);
+  private readonly dialogs = inject(Dialogs);
+  protected readonly seeder = inject(LiveSeeder);
   protected readonly session = inject(Session);
 
   protected readonly ledger = signal<Transaction[]>([]);
@@ -36,6 +40,15 @@ export class NanaPage {
   protected issueAmount: number | null = null;
   protected issueReason = '';
   protected readonly issuing = signal(false);
+
+  // Issue dollars. Kept separate from the coin form rather than adding a
+  // currency dropdown to it: issuing dollars is a different act with a
+  // different unit, and a dropdown that silently changes what "500" means is
+  // exactly the kind of thing that gets someone issued $5 instead of 5 coins.
+  protected usdTo = '';
+  protected usdCents: number | null = null;
+  protected usdReason = '';
+  protected readonly issuingUsd = signal(false);
 
   protected readonly reversing = signal<string | null>(null);
 
@@ -104,6 +117,60 @@ export class NanaPage {
     }
   }
 
+  protected async issueDollars(): Promise<void> {
+    if (this.issuingUsd()) return;
+
+    if (!this.usdTo) {
+      this.toasts.error('Choose who the dollars are for.');
+      return;
+    }
+    const cents = Number(this.usdCents);
+    if (!Number.isInteger(cents) || cents <= 0) {
+      this.toasts.error('Enter a whole number of cents.');
+      return;
+    }
+
+    this.issuingUsd.set(true);
+    try {
+      await this.api.issueUSD(this.usdTo, cents, this.usdReason.trim(), newIdempotencyKey());
+      this.usdCents = null;
+      this.usdReason = '';
+      this.toasts.ok('Issued.');
+      await Promise.all([this.session.refresh(), this.loadLedger()]);
+    } catch (e) {
+      this.toasts.fromError(e);
+    } finally {
+      this.issuingUsd.set(false);
+    }
+  }
+
+  /**
+   * Fills the household with a year of plausible history.
+   *
+   * Confirmed first, and the confirmation says what it will actually do: this
+   * writes hundreds of real transactions, and on the board that is minutes of
+   * work and a meaningful slice of the ledger's 365-record window.
+   */
+  protected async seedDemo(): Promise<void> {
+    const opts = defaultSeed();
+    const ok = await this.dialogs.confirm({
+      title: 'Add a year of history?',
+      message: 'Everything is written through the ordinary API, so it is all real.',
+      detail: [
+        `${opts.members} members, each with a starting float`,
+        `${opts.listings} listings, some of them want-ads`,
+        `about ${opts.weeks * opts.perWeek} transactions`,
+        'A couple of minutes against the board.',
+      ],
+      confirmLabel: 'Add it',
+    });
+    if (ok === null) return;
+
+    await this.seeder.run(opts);
+    await Promise.all([this.session.refresh(), this.loadLedger()]);
+    if (!this.seeder.lastError()) this.toasts.ok('A year of history added.');
+  }
+
   /**
    * Reverses a transaction by appending its mirror image. The original is
    * never edited, so the household gets an audit trail rather than a rewritten
@@ -116,7 +183,16 @@ export class NanaPage {
   protected async reverse(t: Transaction): Promise<void> {
     if (this.reversing()) return;
 
-    const reason = prompt(`Why is this being reversed?\n\n"${t.description || t.kind}"`);
+    const reason = await this.dialogs.prompt({
+      title: 'Reverse this transaction?',
+      message:
+        'This appends a correction. Nothing is deleted, and the original stays in the ledger.',
+      detail: [t.description || t.kind],
+      placeholder: 'Why is this being reversed?',
+      confirmLabel: 'Reverse',
+      required: true,
+      danger: true,
+    });
     if (reason === null) return;
 
     this.reversing.set(t.id);

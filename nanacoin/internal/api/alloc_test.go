@@ -20,7 +20,31 @@ import (
 //	go test ./internal/api/ -run XXX -bench BenchmarkPerRequestAllocation -benchmem
 func BenchmarkPerRequestAllocation(b *testing.B) {
 	h := newHarness(b)
-	nana, alice, _, aliceAcct, bobAcct := h.setup()
+	nana, alice, bob, aliceAcct, bobAcct := h.setup()
+
+	// Give offers something to render. An empty table measures nothing: the
+	// first version of this endpoint allocated per *offer*, so the cost only
+	// shows up with rows in it.
+	{
+		body, _ := json.Marshal(createListingRequest{Title: "Thing", Price: 5})
+		r := httptest.NewRequest("POST", "/api/v1/listings", bytes.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+alice)
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.srv.ServeHTTP(w, r)
+		var created listingView
+		_ = json.Unmarshal(w.Body.Bytes(), &created)
+
+		for i := 0; i < 10; i++ {
+			ob, _ := json.Marshal(offerRequest{Amount: int64(i + 1), Message: "offer"})
+			or := httptest.NewRequest("POST", "/api/v1/listings/"+string(created.ID)+"/offers",
+				bytes.NewReader(ob))
+			or.Header.Set("Authorization", "Bearer "+bob)
+			or.Header.Set("Content-Type", "application/json")
+			or.Header.Set("Idempotency-Key", "offer-"+string(rune('a'+i)))
+			h.srv.ServeHTTP(httptest.NewRecorder(), or)
+		}
+	}
 
 	// Give history something to render.
 	for i := 0; i < 20; i++ {
@@ -46,6 +70,7 @@ func BenchmarkPerRequestAllocation(b *testing.B) {
 		{"history-15", "GET", "/api/v1/accounts/" + aliceAcct + "/transactions?limit=15", alice, nil},
 		{"ledger-50", "GET", "/api/v1/transactions?limit=50", nana, nil},
 		{"logs", "GET", "/api/v1/logs?limit=50", "", nil},
+		{"offers", "GET", "/api/v1/offers", alice, nil},
 	}
 
 	for _, tc := range cases {

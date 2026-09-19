@@ -178,10 +178,32 @@ func (b *Book) Balance(acct AccountID) Amount {
 	return b.balanceOf(b.strs.Find(string(acct)))
 }
 
+// BalanceIn is the balance of an account in one currency.
+//
+// Dollars live in a separate account - see USDAccount - so this resolves to
+// the right one rather than filtering postings. That keeps a balance a fold
+// over one account, which is what the whole balance cache assumes.
+func (b *Book) BalanceIn(acct AccountID, c Currency) Amount {
+	if c == USD {
+		return b.Balance(USDAccount(acct))
+	}
+	return b.Balance(acct)
+}
+
 // Circulation is the total NanaCoin in existence: the negation of the issuance
 // account's balance.
 func (b *Book) Circulation() Amount {
 	return -b.Balance(SystemIssuance)
+}
+
+// USDHeld is the total dollars the household holds, in cents.
+//
+// The same construction as Circulation: dollars enter through USDIssuance, so
+// the negation of its balance is what everyone else holds between them. That
+// is the number that answers "does Nana have dollars to sell" for the whole
+// household rather than one account.
+func (b *Book) USDHeld() Amount {
+	return -b.Balance(USDIssuance)
 }
 
 // Get returns a transaction in its public form, allocating it.
@@ -292,7 +314,8 @@ func (b *Book) Validate(t *Transaction, allowOverdraft bool) error {
 	if seq, valid := SeqForTransactionID(t.ID); valid && seq > 0 && seq <= b.total {
 		return ErrDuplicateID
 	}
-	if t.Sum() != 0 {
+	// Every currency the transaction touches must balance on its own.
+	if t.Sum(NANA) != 0 || t.Sum(USD) != 0 {
 		return ErrUnbalanced
 	}
 
@@ -330,10 +353,23 @@ func (b *Book) Validate(t *Transaction, allowOverdraft bool) error {
 		return nil
 	}
 
-	issuance := b.strs.Intern(string(SystemIssuance))
+	// Both issuance accounts are unbounded below, by construction: their
+	// negative balance IS the amount in circulation. USDIssuance is the same
+	// idea for dollars - without the exemption no dollar could ever enter the
+	// household, because the first issuance would overdraw an empty account.
+	// Find, not Intern: this runs on every validate, and Intern would add a
+	// slot for USDIssuance in a household that has never touched a dollar.
+	// That is the unbounded growth the intern table exists to avoid - and a
+	// test caught it, which is why the table has one.
+	//
+	// SystemIssuance is already interned by then (every transaction names it
+	// or an account beside it), so Find returns the same ref Intern would.
+	// An unknown name returns the zero ref, which matches no posting.
+	issuance := b.strs.Find(string(SystemIssuance))
+	usdIssuance := b.strs.Find(string(USDIssuance))
 	for i := 0; i < count; i++ {
-		if refs[i] == issuance {
-			continue // issuance is unbounded below, by construction
+		if refs[i] == issuance || refs[i] == usdIssuance {
+			continue
 		}
 		if after := b.balanceOf(refs[i]) + nets[i]; after < 0 {
 			return &InsufficientFundsError{
@@ -481,24 +517,38 @@ func (b *Book) BuildReversalInto(id TransactionID, actor UserID, reason string, 
 // Reads the packed records directly rather than unpacking them, so checking a
 // year of history allocates nothing.
 func (b *Book) CheckInvariants() error {
-	var grand Amount
+	// Two totals, not one. A single grand total would let 100 coins out
+	// cancel 100 cents in and call a broken book balanced.
+	var grand, grandUSD Amount
 	for i := 0; i < b.balanceCount; i++ {
 		grand += b.balances[i].opening
 	}
 	for pos := 0; pos < b.count; pos++ {
 		t := &b.txns[b.slot(pos)]
-		if sum := t.Sum(); sum != 0 {
-			return fmt.Errorf("transaction %s sums to %d, not zero", TransactionIDFor(t.Seq), sum)
+		if sum := t.Sum(NANA); sum != 0 {
+			return fmt.Errorf("transaction %s sums to %d NanaCoin, not zero",
+				TransactionIDFor(t.Seq), sum)
+		}
+		if sum := t.Sum(USD); sum != 0 {
+			return fmt.Errorf("transaction %s sums to %d cents, not zero",
+				TransactionIDFor(t.Seq), sum)
 		}
 		for j := 0; j < MaxInlinePostings; j++ {
 			if int(t.Accounts[j]) >= MaxInterned {
 				return fmt.Errorf("invalid account reference")
 			}
-			grand += t.Amounts[j]
+			if t.Currencies[j] == USD {
+				grandUSD += t.Amounts[j]
+			} else {
+				grand += t.Amounts[j]
+			}
 		}
 	}
 	if grand != 0 {
-		return fmt.Errorf("ledger total is %d, not zero", grand)
+		return fmt.Errorf("ledger total is %d NanaCoin, not zero", grand)
+	}
+	if grandUSD != 0 {
+		return fmt.Errorf("ledger total is %d cents, not zero", grandUSD)
 	}
 	// Reconcile 32 references at a time. Sixteen bounded passes trade a little
 	// CPU for 3,840 bytes of permanent RAM, without reducing account/history

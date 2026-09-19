@@ -308,6 +308,8 @@ func parseCreateListingRequest(body []byte, v *createListingRequest) error {
 			v.Currency = p.str(scratch[:])
 		case keyIs(key, "minor_units"):
 			v.MinorUnits = p.int64()
+		case keyIs(key, "side"):
+			v.Side = p.str(scratch[:])
 		default:
 			return false
 		}
@@ -351,3 +353,81 @@ func parseUpdateListingRequest(body []byte, v *updateListingRequest) error {
 
 // marketplace is referenced by the listing status type in the update path.
 var _ marketplace.Status
+
+func parseOfferRequest(body []byte, v *offerRequest) error {
+	p := newJSONR(body)
+	parseScratch.Lock()
+	defer parseScratch.Unlock()
+	scratch := &parseScratch.data
+	p.object(0, func(key []byte) bool {
+		switch {
+		case keyIs(key, "amount"):
+			v.Amount = ledger.Amount(p.int64())
+		case keyIs(key, "message"):
+			v.Message = p.str(scratch[:])
+		default:
+			return false
+		}
+		return true
+	})
+	return p.done()
+}
+
+func parseUnacceptRequest(body []byte, v *unacceptRequest) error {
+	p := newJSONR(body)
+	parseScratch.Lock()
+	defer parseScratch.Unlock()
+	scratch := &parseScratch.data
+	p.object(0, func(key []byte) bool {
+		if keyIs(key, "reason") {
+			v.Reason = p.str(scratch[:])
+			return true
+		}
+		return false
+	})
+	return p.done()
+}
+
+func parseQuoteRequest(body []byte, v *quoteRequest) error {
+	p := newJSONR(body)
+	parseScratch.Lock()
+	defer parseScratch.Unlock()
+	scratch := &parseScratch.data
+	p.object(0, func(key []byte) bool {
+		switch {
+		case keyIs(key, "side"):
+			v.Side = p.str(scratch[:])
+		case keyIs(key, "cents_per_coin"):
+			v.CentsPerCoin = ledger.Amount(p.int64())
+		case keyIs(key, "coins"):
+			v.Coins = ledger.Amount(p.int64())
+		case keyIs(key, "expires_at"):
+			v.ExpiresAt = p.int64()
+		default:
+			return false
+		}
+		return true
+	})
+	return p.done()
+}
+
+func parseIssueUSDRequest(body []byte, v *issueUSDRequest) error {
+	p := newJSONR(body)
+	parseScratch.Lock()
+	defer parseScratch.Unlock()
+	scratch := &parseScratch.data
+	p.object(0, func(key []byte) bool {
+		switch {
+		case keyIs(key, "to"):
+			v.To = ledger.AccountID(p.str(scratch[:]))
+		case keyIs(key, "cents"):
+			v.Cents = ledger.Amount(p.int64())
+		case keyIs(key, "reason"):
+			v.Reason = p.str(scratch[:])
+		default:
+			return false
+		}
+		return true
+	})
+	return p.done()
+}

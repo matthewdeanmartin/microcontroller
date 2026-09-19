@@ -41,6 +41,9 @@ func (j *jsonw) userView(v *userView) {
 	if v.Balance != nil {
 		j.fInt64("balance", int64(*v.Balance))
 	}
+	if v.USDCents != nil {
+		j.fInt64("usd_cents", int64(*v.USDCents))
+	}
 	j.objClose()
 }
 
@@ -102,6 +105,25 @@ func (j *jsonw) listingView(v *listingView) {
 	j.fStrOmit("kind", v.Kind)
 	j.fStrOmit("currency", v.Currency)
 	j.fInt64Omit("minor_units", v.MinorUnits)
+	j.fStrOmit("side", v.Side)
+	j.objClose()
+}
+
+func (j *jsonw) offerView(v *offerView) {
+	j.objOpen()
+	j.fStr("id", string(v.ID))
+	j.fStr("listing", string(v.Listing))
+	j.fStr("listing_title", v.ListingTitle)
+	j.fStr("offerer", string(v.Offerer))
+	j.fStr("offerer_name", v.OffererName)
+	j.fInt64("amount", int64(v.Amount))
+	j.fStr("message", v.Message)
+	j.fStr("status", string(v.Status))
+	j.fInt64("created_at", v.CreatedAt)
+	j.fInt64("updated_at", v.UpdatedAt)
+	j.fStrOmit("settled_tx", string(v.SettledTx))
+	j.fInt64Omit("settles_at", v.SettlesAt)
+	j.fBool("reversible", v.Reversible)
 	j.objClose()
 }
 
@@ -170,6 +192,7 @@ func (j *jsonw) config(v *core.Config) {
 	j.fStr("household_name", v.HouseholdName)
 	j.fInt64("initial_grant", int64(v.InitialGrant))
 	j.fStr("currency", v.Currency)
+	j.fInt64("offer_settles_after", v.OfferSettlesAfter)
 	j.objClose()
 }
 
@@ -386,6 +409,103 @@ func (b *recordBuffer) encodePurchase(n namer, l *marketplace.Listing, t *ledger
 	j.key("transaction")
 	j.needComma = false
 	j.transactionSource(n, t)
+	j.objClose()
+	err := j.done()
+	return b.data[:b.n], err
+}
+
+// offerList is the shape /offers returns: an object with one array, matching
+// the other list endpoints rather than a bare array.
+func (j *jsonw) offerList(vs []offerView) {
+	j.objOpen()
+	j.key("offers")
+	j.needComma = false
+	j.arrOpen()
+	for i := range vs {
+		j.comma()
+		j.needComma = false
+		j.offerView(&vs[i])
+		j.needComma = true
+	}
+	j.arrClose()
+	j.objClose()
+}
+
+// encodeOfferResult is what accepting or unaccepting returns: the offer, the
+// transaction that moved the money, and the listing it was against - the same
+// three things a purchase returns, for the same reason.
+func (b *recordBuffer) encodeOfferResult(
+	n namer,
+	o *marketplace.Offer,
+	t *ledger.Transaction,
+	title string,
+	now int64,
+) ([]byte, error) {
+	b.n = 0
+	b.json = newJSONW(b, b.jsonMemory[:])
+	j := &b.json
+	v := n.offer(o, title, now)
+
+	j.objOpen()
+	j.key("offer")
+	j.needComma = false
+	j.offerView(&v)
+	j.key("transaction")
+	j.needComma = false
+	j.transactionSource(n, t)
+	j.objClose()
+	err := j.done()
+	return b.data[:b.n], err
+}
+
+func (j *jsonw) quoteView(v *quoteView) {
+	j.objOpen()
+	j.fStr("id", string(v.ID))
+	j.fStr("maker", string(v.Maker))
+	j.fStr("maker_name", v.MakerName)
+	j.fStr("side", v.Side)
+	j.fInt64("cents_per_coin", int64(v.CentsPerCoin))
+	j.fInt64("coins", int64(v.Coins))
+	j.fInt64("cents", int64(v.Cents))
+	j.fStr("status", string(v.Status))
+	j.fInt64("created_at", v.CreatedAt)
+	j.fInt64("updated_at", v.UpdatedAt)
+	j.fInt64Omit("expires_at", v.ExpiresAt)
+	j.fBool("live", v.Live)
+	j.fStrOmit("taker", string(v.Taker))
+	j.fStrOmit("taker_name", v.TakerName)
+	j.fStrOmit("coin_tx", string(v.CoinTx))
+	j.fStrOmit("cash_tx", string(v.CashTx))
+	j.objClose()
+}
+
+// encodeTradeResult is what taking a quote returns: the filled quote and both
+// legs of the money that moved.
+//
+// Both legs, because a client that saw only one could not tell a completed
+// trade from a half-landed one - which is the failure mode this design
+// deliberately accepts, so it has to be visible.
+func (b *recordBuffer) encodeTradeResult(
+	n namer,
+	q *marketplace.Quote,
+	coin, cash *ledger.Transaction,
+	now int64,
+) ([]byte, error) {
+	b.n = 0
+	b.json = newJSONW(b, b.jsonMemory[:])
+	j := &b.json
+	v := n.quote(q, now)
+
+	j.objOpen()
+	j.key("quote")
+	j.needComma = false
+	j.quoteView(&v)
+	j.key("coin_transaction")
+	j.needComma = false
+	j.transactionSource(n, coin)
+	j.key("cash_transaction")
+	j.needComma = false
+	j.transactionSource(n, cash)
 	j.objClose()
 	err := j.done()
 	return b.data[:b.n], err

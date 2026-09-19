@@ -31,6 +31,15 @@ export interface User {
   created_at: number;
   /** Present only where the caller is entitled to see it. */
   balance?: number;
+
+  /**
+   * The dollar balance, in cents. $5.00 is 500.
+   *
+   * Cents rather than dollars for the same reason the ledger has no floats:
+   * 5.0 invites arithmetic that rounds, and a household that loses a cent per
+   * trade to rounding has no way to find out where it went.
+   */
+  usd_cents?: number;
 }
 
 export interface Posting {
@@ -211,4 +220,50 @@ export interface OfferResult {
   offer: Offer;
   transaction: Transaction;
   listing: Listing;
+}
+
+export type QuoteId = string;
+export type QuoteSide = 'BID' | 'ASK';
+export type QuoteStatus = 'OPEN' | 'FILLED' | 'CANCELLED' | 'EXPIRED';
+
+/**
+ * A standing offer to exchange NanaCoin for dollars at a stated rate.
+ *
+ * Bid means the maker is buying coins and paying dollars; ask means they are
+ * selling coins for dollars. The names are the market's, and they are worth
+ * keeping: "buy" and "sell" invite the question "buying which one?".
+ */
+export interface Quote {
+  id: QuoteId;
+  maker: AccountId;
+  maker_name: string;
+  side: QuoteSide;
+
+  /** Whole cents one coin is worth. 25 means a coin trades for a quarter. */
+  cents_per_coin: number;
+  coins: number;
+
+  /** The dollar side: coins x cents_per_coin, computed by the server so the
+   *  client never does money arithmetic of its own. */
+  cents: number;
+
+  status: QuoteStatus;
+  created_at: number;
+  updated_at: number;
+  expires_at?: number;
+
+  /** Whether it can be taken right now, judged against the server's clock. */
+  live: boolean;
+
+  taker?: AccountId;
+  taker_name?: string;
+  coin_tx?: TransactionId;
+  cash_tx?: TransactionId;
+}
+
+/** What taking a quote returns: the filled quote and both legs of the money. */
+export interface TradeResult {
+  quote: Quote;
+  coin_transaction: Transaction;
+  cash_transaction: Transaction;
 }

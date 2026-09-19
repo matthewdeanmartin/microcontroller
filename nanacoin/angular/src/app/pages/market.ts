@@ -6,6 +6,7 @@ import { FormsModule } from '@angular/forms';
 import { Listing, ListingSide } from '../api/models';
 import { ApiError, NanacoinService, newIdempotencyKey } from '../api/nanacoin.service';
 import { Session } from '../api/session';
+import { Dialogs } from '../ui/dialog';
 import { Toasts } from '../ui/toasts';
 
 @Component({
@@ -16,6 +17,7 @@ import { Toasts } from '../ui/toasts';
 export class MarketPage {
   private readonly api = inject(NanacoinService);
   private readonly toasts = inject(Toasts);
+  private readonly dialogs = inject(Dialogs);
   protected readonly session = inject(Session);
 
   protected title = '';
@@ -57,26 +59,20 @@ export class MarketPage {
   protected async offer(l: Listing): Promise<void> {
     if (this.offering()) return;
 
-    const suggested = String(l.price);
-    const raw = prompt(
-      this.wanted(l)
-        ? `Offer to do "${l.title}".\n\nFor how many coins?`
-        : `Offer on "${l.title}" (asking ${l.price}).\n\nHow many coins?`,
-      suggested,
-    );
-    if (raw === null) return;
-
-    const amount = Number(raw);
-    if (!Number.isInteger(amount) || amount <= 0) {
-      this.toasts.error('Enter a whole number of coins.');
-      return;
-    }
-
-    const message = prompt('Anything to say with it? (optional)', '') ?? '';
+    const answer = await this.dialogs.offer({
+      title: this.wanted(l) ? `Offer to do "${l.title}"` : `Offer on "${l.title}"`,
+      message: this.wanted(l)
+        ? `${l.seller_name} is offering ${l.price} for this. Name your price - they still have to accept.`
+        : `${l.seller_name} is asking ${l.price}. Offer what you like - they still have to accept.`,
+      initial: String(l.price),
+      confirmLabel: 'Send offer',
+    });
+    if (answer === null) return;
+    const { amount, message } = answer;
 
     this.offering.set(l.id);
     try {
-      await this.api.makeOffer(l.id, amount, message.trim(), newIdempotencyKey());
+      await this.api.makeOffer(l.id, amount, message, newIdempotencyKey());
       this.toasts.ok('Offer sent. It is not a deal until they accept.');
     } catch (e) {
       // The board may not have offers yet, which is expected while the UI

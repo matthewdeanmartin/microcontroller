@@ -57,6 +57,18 @@ type PackedTransaction struct {
 	Reference   Slot
 
 	Kind PackedKind
+
+	// Currencies of the inline postings, in the same order as Accounts.
+	//
+	// Two bytes, and they cost nothing: the struct already carried 18 bytes
+	// of padding, so these sit in space that was being paid for anyway.
+	// Measured before and after - PackedTransaction stays 56 bytes, and the
+	// 365-record ring stays 20 KB.
+	//
+	// Per posting rather than per transaction because a cross-currency trade
+	// has legs in different currencies, and a transaction-level tag could not
+	// describe one.
+	Currencies [MaxInlinePostings]Currency
 }
 
 // PackedKind is a transaction kind as a single byte.

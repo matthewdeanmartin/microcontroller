@@ -60,6 +60,15 @@ const (
 	TypeListingPurchased RecordType = 32
 	TypeListingCancelled RecordType = 33
 
+	TypeOfferCreated  RecordType = 34
+	TypeOfferAccepted RecordType = 35
+	TypeOfferUpdated  RecordType = 36
+
+	TypeQuoteCreated RecordType = 37
+	TypeQuoteTaken   RecordType = 38
+	TypeQuoteSettled RecordType = 39
+	TypeQuoteUpdated RecordType = 41
+
 	TypeConfigUpdated RecordType = 40
 
 	TypeIdempotency RecordType = 50
@@ -85,6 +94,20 @@ func (t RecordType) String() string {
 		return "LISTING_PURCHASED"
 	case TypeListingCancelled:
 		return "LISTING_CANCELLED"
+	case TypeOfferCreated:
+		return "OFFER_CREATED"
+	case TypeOfferAccepted:
+		return "OFFER_ACCEPTED"
+	case TypeOfferUpdated:
+		return "OFFER_UPDATED"
+	case TypeQuoteCreated:
+		return "QUOTE_CREATED"
+	case TypeQuoteTaken:
+		return "QUOTE_TAKEN"
+	case TypeQuoteSettled:
+		return "QUOTE_SETTLED"
+	case TypeQuoteUpdated:
+		return "QUOTE_UPDATED"
 	case TypeConfigUpdated:
 		return "CONFIG_UPDATED"
 	case TypeIdempotency:

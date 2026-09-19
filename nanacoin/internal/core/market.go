@@ -19,6 +19,7 @@ type ListingInput struct {
 	Kind        string
 	Currency    string
 	MinorUnits  int64
+	Side        marketplace.Side
 }
 
 // CreateListing posts an offer. The seller is always the authenticated user:
@@ -49,6 +50,7 @@ func (s *Service) CreateListing(actor *users.User, in ListingInput) (*marketplac
 		Kind:        in.Kind,
 		Currency:    in.Currency,
 		MinorUnits:  in.MinorUnits,
+		Side:        in.Side,
 	}
 	if !s.store.canWriteListing(&l) {
 		return nil, ErrCapacity

@@ -4,7 +4,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 
 import { Log } from '../api/log';
-import { ApiError } from '../api/nanacoin.service';
+import { ApiError, BusyError } from '../api/nanacoin.service';
 
 export interface Toast {
   id: number;
@@ -40,6 +40,13 @@ export class Toasts {
    * log is not.
    */
   fromError(e: unknown) {
+    if (e instanceof BusyError) {
+      // Not a failure: the board refused on purpose and we ran out of
+      // retries. Saying "busy" is both true and actionable.
+      this.log.warn('ui', 'the board is busy', { retryAfterMs: e.retryAfterMs });
+      this.push('NanaCoin is busy right now. Try again in a moment.', 'error');
+      return;
+    }
     if (e instanceof ApiError) {
       this.log.warn('ui', 'showing an error to the user', {
         status: e.status,

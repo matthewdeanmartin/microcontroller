@@ -67,6 +67,15 @@ type Server struct {
 	// and is why the window is meant to be minutes rather than the board's
 	// lifetime.
 	allowProvision bool
+
+	// health reports the host's own condition - heap figures on the board,
+	// nothing on a desktop.
+	//
+	// Held here rather than on the event log, which is where it used to live.
+	// That coupling meant a no-logs build reported no health either: the one
+	// number needed to diagnose a memory problem vanished exactly when
+	// logging had been turned off to save memory. The two are unrelated.
+	health func() string
 }
 
 type Config struct {
@@ -121,6 +130,23 @@ func NewServer(svc *core.Service, sessions *auth.Store, cfg Config) *Server {
 		server.freeRecords <- &server.records[i]
 	}
 	return server
+}
+
+// SetHealth registers the host's health reporter.
+//
+// The event log also shows it beside its events, when there is a log at all -
+// but the reading itself no longer depends on one existing.
+func (s *Server) SetHealth(fn func() string) {
+	s.health = fn
+	s.log.SetHealth(eventlog.HealthFunc(fn))
+}
+
+// healthLine is the host's health, or empty if nothing was registered.
+func (s *Server) healthLine() string {
+	if s.health == nil {
+		return ""
+	}
+	return s.health()
 }
 
 // logsEnabled reports whether this server records events and should serve
@@ -211,6 +237,26 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code = http.StatusNotFound, "transaction_not_found"
 	case errors.Is(err, core.ErrListingClosed):
 		status, code = http.StatusConflict, "listing_closed"
+	case errors.Is(err, core.ErrOfferUnknown):
+		status, code = http.StatusNotFound, "offer_not_found"
+	case errors.Is(err, core.ErrOfferOrphaned):
+		// 409, not 404: the offer exists, it is the thing it points at that
+		// is gone. A 404 here reads as "no such offer", which sends whoever
+		// is looking at it hunting for the wrong problem.
+		status, code = http.StatusConflict, "offer_orphaned"
+	case errors.Is(err, core.ErrOfferClosed):
+		status, code = http.StatusConflict, "offer_closed"
+	case errors.Is(err, core.ErrOfferSettled):
+		status, code = http.StatusConflict, "offer_settled"
+	case errors.Is(err, core.ErrQuoteUnknown):
+		status, code = http.StatusNotFound, "quote_not_found"
+	case errors.Is(err, core.ErrQuoteClosed):
+		status, code = http.StatusConflict, "quote_closed"
+	case errors.Is(err, core.ErrQuoteExpired):
+		// 409 rather than 410: the quote is still there to look at, it just
+		// cannot be traded, and a client showing a stale book needs to tell
+		// those apart.
+		status, code = http.StatusConflict, "quote_expired"
 	case errors.Is(err, core.ErrSelfDeal):
 		status, code = http.StatusBadRequest, "self_deal"
 	case errors.Is(err, core.ErrUsernameTaken):

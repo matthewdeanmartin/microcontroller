@@ -7,6 +7,7 @@ import (
 
 	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/eventlog"
 	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/ledger"
+	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/marketplace"
 )
 
 // Handler builds the router.
@@ -57,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc(v1+"/admin/issue", s.only("POST", s.handleIssue))
 	mux.HandleFunc(v1+"/admin/retire", s.only("POST", s.handleRetire))
+	mux.HandleFunc(v1+"/admin/issue-usd", s.only("POST", s.handleIssueUSD))
 	mux.HandleFunc(v1+"/admin/config", s.byMethod(map[string]http.HandlerFunc{
 		"GET":   s.handleGetConfig,
 		"PATCH": s.handleSetConfig,
@@ -67,6 +69,15 @@ func (s *Server) Handler() http.Handler {
 		"POST": s.handleCreateListing,
 	}))
 	mux.HandleFunc(v1+"/listings/", s.handleListingRoute)
+
+	mux.HandleFunc(v1+"/quotes", s.byMethod(map[string]http.HandlerFunc{
+		"GET":  s.handleListQuotes,
+		"POST": s.handlePostQuote,
+	}))
+	mux.HandleFunc(v1+"/quotes/", s.handleQuoteRoute)
+
+	mux.HandleFunc(v1+"/offers", s.only("GET", s.handleListOffers))
+	mux.HandleFunc(v1+"/offers/", s.handleOfferRoute)
 
 	return s.middleware(mux)
 }
@@ -162,11 +173,51 @@ func (s *Server) handleListingRoute(w http.ResponseWriter, r *http.Request) {
 		})(w, r)
 		return
 	}
+	if base, ok := trimSuffix(r.URL.Path, "offers"); ok {
+		s.only("POST", func(w http.ResponseWriter, r *http.Request) {
+			s.handleMakeOffer(w, r, ledger.ListingID(lastSegment(base)))
+		})(w, r)
+		return
+	}
 	id := ledger.ListingID(lastSegment(r.URL.Path))
 	s.byMethod(map[string]http.HandlerFunc{
 		"GET":   func(w http.ResponseWriter, r *http.Request) { s.handleListing(w, r, id) },
 		"PATCH": func(w http.ResponseWriter, r *http.Request) { s.handleUpdateListing(w, r, id) },
 	})(w, r)
+}
+
+// handleOfferRoute serves the actions on one offer. Like every other route
+// here it dispatches on a trailing segment rather than a pattern language,
+// because TinyGo's net/http has none.
+func (s *Server) handleOfferRoute(w http.ResponseWriter, r *http.Request) {
+	if base, ok := trimSuffix(r.URL.Path, "accept"); ok {
+		s.only("POST", func(w http.ResponseWriter, r *http.Request) {
+			s.handleAcceptOffer(w, r, ledger.OfferID(lastSegment(base)))
+		})(w, r)
+		return
+	}
+	// "unaccept" rather than "reverse": reversing is a ledger operation Nana
+	// does to any transaction, and this is a narrower thing - either party
+	// undoing a deal inside its settlement window.
+	if base, ok := trimSuffix(r.URL.Path, "unaccept"); ok {
+		s.only("POST", func(w http.ResponseWriter, r *http.Request) {
+			s.handleUnacceptOffer(w, r, ledger.OfferID(lastSegment(base)))
+		})(w, r)
+		return
+	}
+	if base, ok := trimSuffix(r.URL.Path, "decline"); ok {
+		s.only("POST", func(w http.ResponseWriter, r *http.Request) {
+			s.handleCloseOffer(w, r, ledger.OfferID(lastSegment(base)), marketplace.OfferDeclined)
+		})(w, r)
+		return
+	}
+	if base, ok := trimSuffix(r.URL.Path, "withdraw"); ok {
+		s.only("POST", func(w http.ResponseWriter, r *http.Request) {
+			s.handleCloseOffer(w, r, ledger.OfferID(lastSegment(base)), marketplace.OfferWithdrawn)
+		})(w, r)
+		return
+	}
+	writeErrorBody(w, http.StatusNotFound, "not_found", "no such offer action")
 }
 
 // middleware applies CORS to every response and answers preflights before
@@ -204,7 +255,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		// A header rather than the body, so it is on every response - including
 		// the ones whose bodies are defined shapes that must not grow a
 		// diagnostic field.
-		if h := s.log.Health(); h != "" {
+		if h := s.healthLine(); h != "" {
 			setHeader(w.Header(), "X-Nanacoin-Health", h)
 		}
 

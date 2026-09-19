@@ -8,6 +8,16 @@ import (
 )
 
 // Config returns household policy.
+// Now is the service's clock, which the API needs to say whether an
+// acceptance is still inside its settlement window. The client cannot work
+// that out for itself: a board with no RTC and a phone in another timezone
+// will not agree on what time it is.
+func (s *Service) Now() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.now().Unix()
+}
+
 func (s *Service) Config() Config {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -286,4 +296,18 @@ func (s *Service) Circulation() ledger.Amount {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.book.Circulation()
+}
+
+// ListingTitleLocked captions an offer with what it is for, without taking
+// the lock - the caller already holds it, which is what EachOffer does.
+//
+// An offer whose listing has been recycled out of the table returns an empty
+// title rather than failing: the money part is in the ledger regardless, and
+// a caption is not worth failing a whole list over.
+func (s *Service) ListingTitleLocked(id ledger.ListingID) string {
+	i := s.store.findListing(id)
+	if i < 0 {
+		return ""
+	}
+	return s.store.arena.Get(s.store.listingsArr[i].Title)
 }

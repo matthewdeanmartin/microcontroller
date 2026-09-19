@@ -78,6 +78,7 @@ var _K = [...]uint32{
 }
 
 // Adapted from Go 1.26.5: caller-owned schedule instead of a local array.
+//
 //go:noinline
 func blockGeneric(dig *fixedSHAState, p []byte) {
 	w := &dig.w

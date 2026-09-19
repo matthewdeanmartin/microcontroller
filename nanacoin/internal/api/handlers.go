@@ -25,7 +25,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// the heap reading from the seven responses before a crash - and /status
 	// is the endpoint a monitor polls, so this is the one place the reading
 	// should be impossible to lose.
-	if h := s.log.Health(); h != "" {
+	if h := s.healthLine(); h != "" {
 		encodeJSON(w, http.StatusOK, func(j *jsonw) { j.statusWithHealth(&st, h) })
 		return
 	}
@@ -189,7 +189,11 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bal := s.svc.Balance(u.Account)
-	uv := viewUser(u, &bal)
+	// /me shows both currencies: this is where a person looks for what they
+	// have, and "how many dollars do I hold" is half of that once the
+	// exchange exists.
+	usd := s.svc.USDBalance(u.Account)
+	uv := viewUser(u, &bal, &usd)
 	encodeJSON(w, http.StatusOK, func(j *jsonw) { j.userView(&uv) })
 }
 
@@ -639,6 +643,7 @@ type createListingRequest struct {
 	Kind        string        `json:"kind"`
 	Currency    string        `json:"currency"`
 	MinorUnits  int64         `json:"minor_units"`
+	Side        string        `json:"side"`
 }
 
 func (s *Server) handleCreateListing(w http.ResponseWriter, r *http.Request) {
@@ -653,6 +658,7 @@ func (s *Server) handleCreateListing(w http.ResponseWriter, r *http.Request) {
 	l, err := s.svc.CreateListing(actor, core.ListingInput{
 		Title: req.Title, Description: req.Description, Price: req.Price,
 		Kind: req.Kind, Currency: req.Currency, MinorUnits: req.MinorUnits,
+		Side: marketplace.ParseSide(req.Side),
 	})
 	if err != nil {
 		writeError(w, err)
@@ -752,7 +758,7 @@ func (s *Server) handlePurchase(w http.ResponseWriter, r *http.Request, id ledge
 func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	limit := s.pageSize(r, 50)
 	total := s.log.Count()
-	health := s.log.Health()
+	health := s.healthLine()
 
 	// Streamed like the other lists. The log is the endpoint most likely to
 	// be polled while the board is already short of memory, so it is the

@@ -83,7 +83,7 @@ func TestRoutesAreWellFormed(t *testing.T) {
 // count so that adding an endpoint to internal/api without adding it here
 // fails a test rather than 404ing on the board only.
 func TestRouteCountMatchesTheAPI(t *testing.T) {
-	const want = 27
+	const want = 39
 	if got := len(MethodRoutes()); got != want {
 		t.Errorf("MethodRoutes has %d entries, want %d - if you added or removed an "+
 			"endpoint in internal/api, update both and this count", got, want)

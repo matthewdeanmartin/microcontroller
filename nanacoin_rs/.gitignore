@@ -1,0 +1,9 @@
+/target/
+/.embuild/
+/certs/
+/.env
+/.local/
+/*.journal
+/sdkconfig*
+!/sdkconfig.defaults
+/*.tmp

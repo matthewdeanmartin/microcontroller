@@ -23,6 +23,7 @@ import { FormsModule } from '@angular/forms';
 import { Listing, Offer } from '../api/models';
 import { ApiError, NanacoinService, newIdempotencyKey } from '../api/nanacoin.service';
 import { Session } from '../api/session';
+import { Dialogs } from '../ui/dialog';
 import { Toasts } from '../ui/toasts';
 
 @Component({
@@ -60,14 +61,27 @@ import { Toasts } from '../ui/toasts';
               @if (o.message) {
                 <p class="card__desc">{{ o.message }}</p>
               }
+              @if (!o.listing_title) {
+                <!--
+                  The listing this offer points at is gone - recycled, or
+                  written with a truncated ID by an older build. There is
+                  nothing to accept, so do not offer a button that cannot
+                  work; declining still tidies it away.
+                -->
+                <p class="card__status">
+                  The listing this refers to no longer exists.
+                </p>
+              }
               <div class="card__actions">
-                <button
-                  class="btn"
-                  (click)="accept(o)"
-                  [disabled]="busy() !== null"
-                >
-                  {{ busy() === o.id ? 'Accepting…' : 'Accept' }}
-                </button>
+                @if (o.listing_title) {
+                  <button
+                    class="btn"
+                    (click)="accept(o)"
+                    [disabled]="busy() !== null"
+                  >
+                    {{ busy() === o.id ? 'Accepting…' : 'Accept' }}
+                  </button>
+                }
                 <button
                   class="btn btn--quiet"
                   (click)="decline(o)"
@@ -121,6 +135,7 @@ import { Toasts } from '../ui/toasts';
 export class OffersPage {
   private readonly api = inject(NanacoinService);
   private readonly toasts = inject(Toasts);
+  private readonly dialogs = inject(Dialogs);
   protected readonly session = inject(Session);
 
   protected readonly offers = signal<Offer[]>([]);
@@ -175,12 +190,17 @@ export class OffersPage {
    */
   protected async accept(offer: Offer): Promise<void> {
     if (this.busy()) return;
-    const ok = confirm(
-      `Accept ${offer.amount} ${offer.amount === 1 ? 'coin' : 'coins'} ` +
-        `from ${offer.offerer_name} for "${offer.listing_title}"?\n\n` +
-        'This moves the money and closes the listing.',
-    );
-    if (!ok) return;
+    const ok = await this.dialogs.confirm({
+      title: 'Accept this offer?',
+      message: 'This moves the money now and closes the listing.',
+      detail: [
+        `${offer.amount} ${offer.amount === 1 ? 'coin' : 'coins'} from ${offer.offerer_name}`,
+        offer.listing_title || 'a listing that no longer exists',
+        'You can undo this for a while afterwards, from the Offers tab.',
+      ],
+      confirmLabel: 'Accept',
+    });
+    if (ok === null) return;
 
     this.busy.set(offer.id);
     try {

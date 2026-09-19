@@ -67,13 +67,23 @@ const (
 	// connection holds its slot after its request is answered, until the peer
 	// closes it and closingTimeout expires.
 	//
-	// 8 is measured, not guessed: at 8 the board serves hundreds of requests
-	// before a burst outruns reclamation, and it recovers by itself. Raising
-	// it to 24 made the board stop accepting entirely - each slot carries
-	// TxBufSize+RxBufSize of buffers, and 24 of those does not fit alongside
-	// the router and the WiFi blob. If this is ever raised, shrink the
-	// buffers to match and re-measure.
-	poolConns = 8
+	// 5 is measured, and the measurement that set it is worth keeping.
+	//
+	// At 8 slots the pool held 24 KB - more than twice the ~10 KB the board
+	// has free after setup - and a single browsing user, whose page issues
+	// five requests at once, drove the heap to 672 bytes and left the board
+	// unresponsive until it was physically reset. It did not recover on its
+	// own after twenty minutes.
+	//
+	// The earlier note said 8 "serves hundreds of requests before a burst
+	// outruns reclamation, and it recovers by itself". That held for
+	// sequential traffic; it does not survive the concurrent burst a single
+	// page load produces, which is the traffic this board actually gets.
+	//
+	// 5 covers one page's five parallel reads with nothing spare, which is
+	// the honest ceiling: beyond it the listener refuses with an RST, and a
+	// refusal the client can see beats a timeout it cannot explain.
+	poolConns = 5
 
 	// requestHeaderBuffer holds one request's header fields. A browser sends
 	// around twenty, one of them a bearer token, so 1 kB is comfortable.
@@ -224,7 +234,7 @@ func main() {
 	// than only over USB. The board's memory was the crucial number while
 	// diagnosing the out-of-memory and it was the one thing the logs page
 	// could not show.
-	srv.Log().SetHealth(healthLine)
+	srv.SetHealth(healthLine)
 
 	// Report the previous run's fate through the API as well as the console.
 	// This is the one that matters: the board lives downstairs by the router

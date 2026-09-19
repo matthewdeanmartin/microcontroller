@@ -19,7 +19,33 @@ type (
 	UserID        string
 	TransactionID string
 	ListingID     string
+	OfferID       string
+	QuoteID       string
 )
+
+// USDAccount is the dollar wallet belonging to a coin account.
+//
+// Two accounts per person rather than one account holding two currencies,
+// which is what keeps the balance machinery untouched: a balance is still the
+// fold over one account's postings, and "does Alice have $5" is the same
+// question as "does Alice have 5 coins", asked of a different account.
+//
+// MaxAccounts is 32 for 16 users, and the comment there has always said the
+// second slot was for "a user to gain a second account later without a format
+// change". This is that.
+func USDAccount(coinAccount AccountID) AccountID {
+	return coinAccount + "-usd"
+}
+
+// USDIssuance is where dollars enter and leave the household, mirroring
+// SystemIssuance for coins.
+//
+// It exists because dollars are the first thing this system holds that it
+// cannot create. A coin's provenance is the issuance account and the invariant
+// that every posting sums to zero; without an equivalent for dollars, "where
+// did this $5 come from" has no answer the ledger can give. With it, the same
+// whole-book property covers both.
+const USDIssuance AccountID = "account:usd-issuance"
 
 // SystemIssuance is the account new coin is created from and retired into. It
 // is the one account permitted to go arbitrarily negative: its balance is the
@@ -39,10 +65,45 @@ const (
 	KindReversal TransactionKind = "REVERSAL"
 )
 
+// Currency is what a posting is denominated in.
+//
+// NanaCoin is the zero value, so every record written before foreign exchange
+// existed reads back as what it was, and every transaction that does not
+// mention a currency is in coins.
+//
+// Deliberately a byte rather than a string code. A household trades in one or
+// two currencies, the set is fixed at compile time, and a string would cost an
+// intern slot per posting on a device where the intern table is a measured
+// scarcity.
+type Currency uint8
+
+const (
+	// NANA is the household currency. Zero, so it is the default everywhere.
+	NANA Currency = 0
+	// USD is United States dollars, held in cents - see Amount's no-floats
+	// rule. $5.00 is 500, never 5.0.
+	USD Currency = 1
+)
+
+func (c Currency) String() string {
+	if c == USD {
+		return "USD"
+	}
+	return "NANA"
+}
+
+// Minor reports whether the currency is counted in minor units, which decides
+// how a client formats it: 500 USD renders as $5.00, 500 NANA as 500 coins.
+func (c Currency) Minor() bool { return c == USD }
+
 // Posting is one side of a transaction: a signed change to one account.
 type Posting struct {
 	Account AccountID `json:"account"`
 	Amount  Amount    `json:"amount"`
+
+	// Currency the amount is in. Omitted on the wire when NanaCoin, so an
+	// older client sees exactly the JSON it saw before.
+	Currency Currency `json:"currency,omitempty"`
 }
 
 // Transaction is immutable once appended. Corrections are made by appending a
@@ -68,14 +129,35 @@ type Transaction struct {
 	Postings []Posting `json:"postings"`
 }
 
-// Sum returns the total of all postings. For every transaction kind this must
-// be zero; issuance balances against SystemIssuance rather than being exempt.
-func (t *Transaction) Sum() Amount {
+// Sum returns the total of all postings in one currency.
+//
+// Per currency, not across them: a cross-currency trade moves coins one way
+// and dollars the other, and a single total would let 100 coins out cancel
+// 100 cents in. Each currency must balance on its own, which is what makes
+// "every coin is accounted for" and "every dollar is accounted for" two
+// separate true statements rather than one averaged one.
+func (t *Transaction) Sum(c Currency) Amount {
 	var total Amount
 	for _, p := range t.Postings {
-		total += p.Amount
+		if p.Currency == c {
+			total += p.Amount
+		}
 	}
 	return total
+}
+
+// Currencies reports which currencies a transaction touches. A household
+// transaction touches one; a forex leg touches one; only a hypothetical
+// multi-leg record would touch two, and MaxInlinePostings does not allow it.
+func (t *Transaction) Currencies() (nana, usd bool) {
+	for _, p := range t.Postings {
+		if p.Currency == USD {
+			usd = true
+		} else {
+			nana = true
+		}
+	}
+	return nana, usd
 }
 
 // Affects reports whether the transaction touches an account, so history

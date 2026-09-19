@@ -132,7 +132,13 @@ type packedListing struct {
 	Currency ledger.Ref
 	Kind     uint8
 	Status   uint8
-	InUse    bool
+
+	// Side is SELL or BUY. It sits here beside the other single-byte fields
+	// because that padding was already being paid for: a want-ad costs the
+	// board nothing over a listing.
+	Side uint8
+
+	InUse bool
 }
 
 // store holds every domain object, in fixed arrays.
@@ -147,11 +153,15 @@ type store struct {
 	usersArr    [MaxUsers]packedUser
 	accountsArr [MaxAccounts]packedAccount
 	listingsArr [MaxListings]packedListing
+	offersArr   [MaxOffers]packedOffer
+	quotesArr   [MaxQuotes]packedQuote
 
 	// Counts of occupied slots, so callers do not scan to answer "how many".
 	nUsers                  int
 	nAccounts               int
 	nListings               int
+	nOffers                 int
+	nQuotes                 int
 	listingCapacityReported bool
 	listingText             ledger.TextReplacement
 }
@@ -470,6 +480,7 @@ func (s *store) writeListing(i int, l *marketplace.Listing) bool {
 		Currency:    s.strs.Intern(l.Currency),
 		Kind:        packListingKind(l.Kind),
 		Status:      packListingStatus(l.Status),
+		Side:        uint8(l.Side),
 		InUse:       true,
 	}
 	return true
@@ -494,6 +505,7 @@ func (s *store) unpackListing(i int) *marketplace.Listing {
 		Kind:        unpackListingKind(p.Kind),
 		Currency:    s.strs.Lookup(p.Currency),
 		MinorUnits:  p.MinorUnits,
+		Side:        marketplace.Side(p.Side),
 	}
 	if p.SoldTx != 0 {
 		l.SoldTx = ledger.TransactionIDFor(p.SoldTx)

@@ -26,6 +26,10 @@ import {
   Offer,
   OfferId,
   OfferResult,
+  Quote,
+  QuoteId,
+  QuoteSide,
+  TradeResult,
   PurchaseResult,
   Status,
   TokenResponse,
@@ -35,6 +39,37 @@ import {
   UserId,
   UserStatus,
 } from './models';
+
+/**
+ * The board asking to be retried.
+ *
+ * Distinct from ApiError because it is not a failure: the request was refused
+ * on purpose, with a stated delay, and the right response is to wait and try
+ * again rather than to show anyone an error.
+ */
+export class BusyError extends Error {
+  readonly code = 'busy';
+  constructor(
+    readonly retryAfterMs: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'BusyError';
+  }
+}
+
+/** Retry-After is seconds, or an HTTP date. Bounded so a bad value cannot hang. */
+function retryAfterMs(header: string | null): number {
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(Math.max(seconds, 0.25) * 1000, 10_000);
+  }
+  const when = header ? Date.parse(header) : NaN;
+  if (Number.isFinite(when)) {
+    return Math.min(Math.max(when - Date.now(), 250), 10_000);
+  }
+  return 1000;
+}
 
 /** Carries the server's machine-readable code alongside its message. */
 export class ApiError extends Error {
@@ -352,6 +387,47 @@ export class NanacoinService {
     return this.post<Listing>(`/listings/${encodeURIComponent(id)}/cancel`, {});
   }
 
+  // --- foreign exchange ---
+
+  /** The book, best rate first: asks ascending, bids descending. */
+  quotes(): Promise<{ quotes: Quote[] }> {
+    return this.get<{ quotes: Quote[] }>('/quotes');
+  }
+
+  /** Advertises a rate. No money moves until someone takes it. */
+  postQuote(input: {
+    side: QuoteSide;
+    cents_per_coin: number;
+    coins: number;
+    expires_at?: number;
+  }): Promise<Quote> {
+    return this.post<Quote>('/quotes', input);
+  }
+
+  /** Executes a trade at the quoted rate. */
+  takeQuote(id: QuoteId, idempotencyKey: string): Promise<TradeResult> {
+    return this.post<TradeResult>(
+      `/quotes/${encodeURIComponent(id)}/take`,
+      {},
+      idempotencyKey,
+    );
+  }
+
+  /** Withdraws a standing rate. The maker's, or Nana's. */
+  cancelQuote(id: QuoteId): Promise<Quote> {
+    return this.post<Quote>(`/quotes/${encodeURIComponent(id)}/cancel`, {});
+  }
+
+  /** Brings dollars into the household. Nana only. */
+  issueUSD(
+    to: AccountId,
+    cents: number,
+    reason: string,
+    idempotencyKey: string,
+  ): Promise<Transaction> {
+    return this.post<Transaction>('/admin/issue-usd', { to, cents, reason }, idempotencyKey);
+  }
+
   // --- offers ---
   //
   // These call endpoints the board does not serve yet. The UI is being built
@@ -443,6 +519,34 @@ export class NanacoinService {
     return h;
   }
 
+  /**
+   * Retries a request the board asked us to retry.
+   *
+   * Only on 503 + Retry-After, which the board sends deliberately when every
+   * worker is busy. Nothing else is retried: a 400 will fail again, and a
+   * money-moving POST that timed out must not be repeated without its
+   * idempotency key doing the deduplicating - which it does, since the key is
+   * generated once per attempt by the caller and reused here.
+   *
+   * Three attempts, honouring the server's own delay. Beyond that the board is
+   * not merely busy and the caller should hear about it.
+   */
+  private async withBackoff<T>(method: string, path: string, run: () => Promise<T>): Promise<T> {
+    const maxAttempts = 3;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await run();
+      } catch (e) {
+        if (!(e instanceof BusyError) || attempt >= maxAttempts) throw e;
+        this.log.info('http', `${method} ${path} busy, waiting`, {
+          attempt,
+          waitMs: e.retryAfterMs,
+        });
+        await new Promise((r) => setTimeout(r, e.retryAfterMs));
+      }
+    }
+  }
+
   private get<T>(path: string): Promise<T> {
     return this.traced('GET', path, () =>
       firstValueFrom(
@@ -486,14 +590,16 @@ export class NanacoinService {
     this.log.debug('http', `${method} ${path}`, body === undefined ? undefined : { body });
 
     try {
-      const result = await run();
+      const result = await this.withBackoff(method, path, run);
       this.log.info('http', `${method} ${path} ok`, {
         ms: Math.round(performance.now() - started),
       });
       return result;
     } catch (e) {
       const ms = Math.round(performance.now() - started);
-      if (e instanceof ApiError) {
+      if (e instanceof BusyError) {
+        this.log.warn('http', `${method} ${path} still busy after retries`, { ms });
+      } else if (e instanceof ApiError) {
         // The whole error, including the code, because "which failure was it"
         // is the question this log exists to answer.
         this.log.error('http', `${method} ${path} failed`, {
@@ -559,6 +665,22 @@ export class NanacoinService {
             ),
         );
       }
+      // A 503 carrying Retry-After is the board saying "busy, come back" -
+      // which is the opposite of unreachable. It answered, on purpose, with a
+      // stated delay.
+      //
+      // This used to fall into the branch below and be reported as "could not
+      // reach NanaCoin", which threw away the one piece of backpressure the
+      // firmware works hard to provide: the board deliberately refuses rather
+      // than dropping the connection, precisely so a client can tell busy
+      // from dead. See internal/boardhttp/adapter.go.
+      if (err.status === 503 && err.headers.get('Retry-After')) {
+        const after = retryAfterMs(err.headers.get('Retry-After'));
+        return throwError(
+          () => new BusyError(after, `NanaCoin is busy. Retrying in ${Math.round(after / 100) / 10}s.`),
+        );
+      }
+
       if (err.status === 0 || err.status === 502 || err.status === 503 || err.status === 504) {
         // Status 0 is no HTTP response at all. A 502/503/504 is a proxy or
         // gateway answering on NanaCoin's behalf because it could not reach

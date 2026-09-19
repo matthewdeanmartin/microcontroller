@@ -6,6 +6,7 @@ import { RouterLink } from '@angular/router';
 import { Transaction } from '../api/models';
 import { NanacoinService, newIdempotencyKey } from '../api/nanacoin.service';
 import { Session } from '../api/session';
+import { Dialogs } from '../ui/dialog';
 import { Toasts } from '../ui/toasts';
 
 /** One row, already reduced to what this account actually experienced. */
@@ -105,6 +106,7 @@ interface Row {
 export class HistoryPage {
   private readonly api = inject(NanacoinService);
   private readonly toasts = inject(Toasts);
+  private readonly dialogs = inject(Dialogs);
   protected readonly session = inject(Session);
 
   /** The transaction currently being reversed, so only its button is busy. */
@@ -157,21 +159,23 @@ export class HistoryPage {
   protected async reverse(txn: Transaction): Promise<void> {
     if (this.reversing()) return;
 
-    const reason = prompt(
-      `Reverse "${txn.description || kindLabel(txn.kind)}"?
-
-` +
-        'This appends a correction; it does not delete anything. Why?',
-    );
+    const reason = await this.dialogs.prompt({
+      title: 'Reverse this transaction?',
+      message: 'This appends a correction. Nothing is deleted, and the original stays in the history.',
+      detail: [
+        txn.description || kindLabel(txn.kind),
+        `${txn.postings.length} postings, ${this.when(txn.created_at)}`,
+      ],
+      placeholder: 'Why is this being reversed?',
+      confirmLabel: 'Reverse',
+      required: true,
+      danger: true,
+    });
     if (reason === null) return;
-    if (!reason.trim()) {
-      this.toasts.error('A reversal needs a reason.');
-      return;
-    }
 
     this.reversing.set(txn.id);
     try {
-      await this.api.reverse(txn.id, reason.trim(), newIdempotencyKey());
+      await this.api.reverse(txn.id, reason, newIdempotencyKey());
       this.toasts.ok('Reversed.');
       // Both the balances and this list changed, so refresh the shared state
       // and re-read the page's own resource.

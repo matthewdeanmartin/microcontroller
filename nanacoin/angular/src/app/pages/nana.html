@@ -118,6 +118,76 @@
   </form>
 </details>
 
+<!--
+  Dollars enter the household the same way coins do, and only here. The
+  exchange has two sides and neither can trade until somebody holds the other
+  currency, so this is the form that makes the Exchange tab useful at all.
+-->
+<details class="disclosure">
+  <summary>Issue dollars</summary>
+  <p class="muted small">
+    Records that someone holds dollars. No real money moves — handing over the
+    actual note is between you and them.
+  </p>
+  <form (ngSubmit)="issueDollars()">
+    <label>
+      To
+      <select name="usdTo" [(ngModel)]="usdTo" required>
+        <option value="" disabled>Choose someone</option>
+        @for (u of session.household(); track u.id) {
+          @if (u.status === 'ACTIVE') {
+            <option [value]="u.account">{{ u.display_name }}</option>
+          }
+        }
+      </select>
+    </label>
+    <label>
+      Cents
+      <input name="usdCents" type="number" min="1" step="1" [(ngModel)]="usdCents" required
+             placeholder="500" />
+    </label>
+    <label>
+      Reason
+      <input name="usdReason" [(ngModel)]="usdReason" maxlength="140" placeholder="Pocket money" />
+    </label>
+    <button class="btn" type="submit" [disabled]="issuingUsd()">
+      {{ issuingUsd() ? 'Issuing…' : 'Issue dollars' }}
+    </button>
+  </form>
+</details>
+
+<details class="disclosure">
+  <summary>Fill this household with a year of history</summary>
+  <p class="muted small">
+    Creates members, issues them a float, posts listings and plays out a year of
+    chores, purchases and offers — through the ordinary API, so every record is
+    real. Useful for seeing what the charts and the market look like with
+    something in them.
+  </p>
+  <p class="muted small">
+    It writes a few hundred transactions and takes a couple of minutes against
+    the board. Existing members and history are left alone.
+  </p>
+
+  @if (seeder.running()) {
+    <p class="seed__progress">
+      <strong>{{ seeder.progress()?.phase }}</strong>
+      {{ seeder.progress()?.done }} / {{ seeder.progress()?.total }}
+    </p>
+    <progress
+      class="seed__bar"
+      [value]="seeder.progress()?.done ?? 0"
+      [max]="seeder.progress()?.total ?? 1"
+    ></progress>
+  } @else {
+    <button class="btn" type="button" (click)="seedDemo()">Add a year of history</button>
+  }
+
+  @if (seeder.lastError()) {
+    <p class="warning">Stopped early: {{ seeder.lastError() }}</p>
+  }
+</details>
+
 <h3>Full ledger</h3>
 
 @if (loadingLedger()) {

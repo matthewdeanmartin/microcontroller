@@ -55,6 +55,21 @@ func MethodRoutes() []string {
 		"PATCH " + APIPrefix + "/listings/{id}",
 		"POST " + APIPrefix + "/listings/{id}/purchase",
 		"POST " + APIPrefix + "/listings/{id}/cancel",
+		"POST " + APIPrefix + "/listings/{id}/offers",
+
+		"GET " + APIPrefix + "/offers",
+		"POST " + APIPrefix + "/offers/{id}/accept",
+		"POST " + APIPrefix + "/offers/{id}/unaccept",
+		"POST " + APIPrefix + "/offers/{id}/decline",
+		"POST " + APIPrefix + "/offers/{id}/withdraw",
+
+		"GET " + APIPrefix + "/quotes",
+		"POST " + APIPrefix + "/quotes",
+		"GET " + APIPrefix + "/quotes/{id}",
+		"POST " + APIPrefix + "/quotes/{id}/take",
+		"POST " + APIPrefix + "/quotes/{id}/cancel",
+
+		"POST " + APIPrefix + "/admin/issue-usd",
 	}
 }
 

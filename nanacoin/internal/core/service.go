@@ -18,10 +18,26 @@ var (
 	ErrAccountUnknown = errors.New("account not found")
 	ErrListingUnknown = errors.New("listing not found")
 	ErrListingClosed  = errors.New("listing is not active")
-	ErrSelfDeal       = errors.New("cannot trade with yourself")
-	ErrUsernameTaken  = errors.New("username already in use")
-	ErrBadInput       = errors.New("invalid input")
-	ErrDisabled       = errors.New("account is disabled")
+	ErrOfferUnknown   = errors.New("no such offer")
+	ErrOfferClosed    = errors.New("offer is not open")
+	// ErrOfferSettled is the settlement window having closed: the acceptance
+	// stood long enough that it is now final.
+	ErrOfferSettled = errors.New("offer has settled and can no longer be undone")
+	// ErrOfferOrphaned is an offer whose listing is no longer in the table.
+	//
+	// Two ways that happens: the listing was recycled to make room - only
+	// closed ones are, so this is rare - or the offer was written with a
+	// truncated listing ID, back when a full text arena silently clipped one.
+	// Either way there is nothing to accept, and saying so beats a bare "not
+	// found" that names the wrong object entirely.
+	ErrOfferOrphaned = errors.New("this offer's listing no longer exists")
+	ErrQuoteUnknown  = errors.New("no such quote")
+	ErrQuoteClosed   = errors.New("quote is no longer open")
+	ErrQuoteExpired  = errors.New("quote has expired")
+	ErrSelfDeal      = errors.New("cannot trade with yourself")
+	ErrUsernameTaken = errors.New("username already in use")
+	ErrBadInput      = errors.New("invalid input")
+	ErrDisabled      = errors.New("account is disabled")
 
 	// ErrCapacity is a fixed table refusing to grow.
 	//
@@ -180,6 +196,48 @@ func (s *Service) applyRecord(r *storage.Record) error {
 			return err
 		}
 		return s.applyEvent(&e)
+	case storage.TypeOfferCreated:
+		var e offerCreatedEvent
+		if err := decodeOfferCreated(r.Payload, &e); err != nil {
+			return err
+		}
+		return s.applyEvent(&e)
+	case storage.TypeOfferAccepted:
+		var e offerAcceptedEvent
+		if err := decodeOfferAccepted(r.Payload, &e); err != nil {
+			return err
+		}
+		return s.applyEvent(&e)
+	case storage.TypeOfferUpdated:
+		var e offerUpdatedEvent
+		if err := decodeOfferUpdated(r.Payload, &e); err != nil {
+			return err
+		}
+		return s.applyEvent(&e)
+	case storage.TypeQuoteCreated:
+		var e quoteCreatedEvent
+		if err := decodeQuoteCreated(r.Payload, &e); err != nil {
+			return err
+		}
+		return s.applyEvent(&e)
+	case storage.TypeQuoteTaken:
+		var e quoteTakenEvent
+		if err := decodeQuoteTaken(r.Payload, &e); err != nil {
+			return err
+		}
+		return s.applyEvent(&e)
+	case storage.TypeQuoteSettled:
+		var e quoteSettledEvent
+		if err := decodeQuoteSettled(r.Payload, &e); err != nil {
+			return err
+		}
+		return s.applyEvent(&e)
+	case storage.TypeQuoteUpdated:
+		var e quoteUpdatedEvent
+		if err := decodeQuoteUpdated(r.Payload, &e); err != nil {
+			return err
+		}
+		return s.applyEvent(&e)
 	case storage.TypeConfigUpdated:
 		var e configUpdatedEvent
 		if err := decodeConfigUpdated(r.Payload, &e); err != nil {
@@ -283,6 +341,124 @@ func (s *Service) applyEvent(event any) error {
 		if !s.store.writeListing(i, l) {
 			return ErrCapacity
 		}
+	case *offerCreatedEvent:
+		if !s.store.writeOffer(&e.Offer) {
+			return ErrCapacity
+		}
+
+	case *offerAcceptedEvent:
+		// Both halves - the money and the two state changes - replay from one
+		// record, for the same reason they were written as one: either all of
+		// it happened or none of it did.
+		oi := s.store.findOffer(e.OfferID)
+		if oi < 0 {
+			return fmt.Errorf("acceptance of unknown offer %s", e.OfferID)
+		}
+		li := s.store.findListing(e.ListingID)
+		if li < 0 {
+			return fmt.Errorf("acceptance against unknown listing %s", e.ListingID)
+		}
+		t := e.Txn
+		if _, err := s.book.Replay(&t); err != nil {
+			return fmt.Errorf("replaying acceptance %s: %w", t.ID, err)
+		}
+
+		o := s.store.unpackOffer(oi)
+		o.Status = marketplace.OfferAccepted
+		o.SettledTx = t.ID
+		o.SettlesAt = e.SettlesAt
+		o.UpdatedAt = e.UpdatedAt
+		if !s.store.writeOffer(o) {
+			return ErrCapacity
+		}
+
+		l := s.store.unpackListing(li)
+		l.Status = marketplace.StatusSold
+		l.Buyer = e.Buyer
+		l.SoldTx = t.ID
+		l.UpdatedAt = e.UpdatedAt
+		if !s.store.writeListing(li, l) {
+			return ErrCapacity
+		}
+
+	case *offerUpdatedEvent:
+		oi := s.store.findOffer(e.ID)
+		if oi < 0 {
+			return fmt.Errorf("update to unknown offer %s", e.ID)
+		}
+		o := s.store.unpackOffer(oi)
+		o.Status = e.Status
+		o.UpdatedAt = e.UpdatedAt
+		if !s.store.writeOffer(o) {
+			return ErrCapacity
+		}
+		// An undone acceptance puts the listing back on the market: the deal
+		// fell through, so the thing is for sale again rather than sitting
+		// sold against a payment that has been reversed.
+		if e.Reopen {
+			if li := s.store.findListing(o.Listing); li >= 0 {
+				l := s.store.unpackListing(li)
+				l.Status = marketplace.StatusActive
+				l.Buyer = ""
+				l.SoldTx = ""
+				l.UpdatedAt = e.UpdatedAt
+				if !s.store.writeListing(li, l) {
+					return ErrCapacity
+				}
+			}
+		}
+
+	case *quoteCreatedEvent:
+		if !s.store.writeQuote(&e.Quote) {
+			return ErrCapacity
+		}
+
+	case *quoteTakenEvent:
+		qi := s.store.findQuote(e.QuoteID)
+		if qi < 0 {
+			return fmt.Errorf("take of unknown quote %s", e.QuoteID)
+		}
+		t := e.CoinTxn
+		if _, err := s.book.Replay(&t); err != nil {
+			return fmt.Errorf("replaying quote coin leg %s: %w", t.ID, err)
+		}
+		q := s.store.unpackQuote(qi)
+		q.Status = marketplace.QuoteFilled
+		q.Taker = e.Taker
+		q.CoinTx = t.ID
+		q.UpdatedAt = e.UpdatedAt
+		if !s.store.writeQuote(q) {
+			return ErrCapacity
+		}
+
+	case *quoteSettledEvent:
+		qi := s.store.findQuote(e.QuoteID)
+		if qi < 0 {
+			return fmt.Errorf("settlement of unknown quote %s", e.QuoteID)
+		}
+		t := e.CashTxn
+		if _, err := s.book.Replay(&t); err != nil {
+			return fmt.Errorf("replaying quote cash leg %s: %w", t.ID, err)
+		}
+		q := s.store.unpackQuote(qi)
+		q.CashTx = t.ID
+		q.UpdatedAt = e.UpdatedAt
+		if !s.store.writeQuote(q) {
+			return ErrCapacity
+		}
+
+	case *quoteUpdatedEvent:
+		qi := s.store.findQuote(e.ID)
+		if qi < 0 {
+			return fmt.Errorf("update to unknown quote %s", e.ID)
+		}
+		q := s.store.unpackQuote(qi)
+		q.Status = e.Status
+		q.UpdatedAt = e.UpdatedAt
+		if !s.store.writeQuote(q) {
+			return ErrCapacity
+		}
+
 	case *configUpdatedEvent:
 		s.cfg = e.Config
 	case *idempotencyEvent:

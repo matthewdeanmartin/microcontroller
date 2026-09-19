@@ -23,6 +23,11 @@ export const routes: Routes = [
     title: 'Offers — NanaCoin',
   },
   {
+    path: 'forex',
+    loadComponent: () => import('./pages/forex').then((m) => m.ForexPage),
+    title: 'Exchange — NanaCoin',
+  },
+  {
     path: 'history',
     loadComponent: () => import('./pages/history').then((m) => m.HistoryPage),
     title: 'History — NanaCoin',
