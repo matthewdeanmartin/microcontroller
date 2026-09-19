@@ -1,0 +1,178 @@
+"""Tests for the static file server, runnable on a PC.
+
+static.py is written to MicroPython's subset but is ordinary Python, so the
+path handling can be tested here rather than by flashing a board and clicking
+around. The two rules worth being sure about are the SPA fallback, which is
+what makes a page survive being refreshed, and the traversal check, which is
+what keeps config.py and its WiFi password off the network.
+
+    python -m pytest test_static.py -q
+"""
+
+import os
+import shutil
+import tempfile
+
+import pytest
+
+import static
+
+
+@pytest.fixture(autouse=True)
+def site(tmp_path, monkeypatch):
+    """A built site on disk, shaped like Angular's output."""
+    root = tmp_path / "www"
+    root.mkdir()
+    (root / "index.html").write_text("<!doctype html>index")
+    (root / "main-ETPGPPCZ.js").write_text("console.log(1)")
+    (root / "main-ETPGPPCZ.js.gz").write_bytes(b"\x1f\x8b gzipped")
+    (root / "styles-YLJGJUOI.css").write_text("body{}")
+    (root / "favicon.ico").write_bytes(b"\x00icon")
+    monkeypatch.setattr(static, "ROOT", str(root))
+    # A sibling the server must never reach.
+    (tmp_path / "config.py").write_text("WIFI_PASSWORD = 'hunter2'")
+    return root
+
+
+def test_root_serves_index():
+    path, gz, ctype = static.resolve("/", False)
+    assert path.endswith("index.html")
+    assert not gz
+    assert ctype.startswith("text/html")
+
+
+def test_existing_file_is_served():
+    path, gz, ctype = static.resolve("/styles-YLJGJUOI.css", False)
+    assert path.endswith("styles-YLJGJUOI.css")
+    assert ctype.startswith("text/css")
+
+
+def test_gzip_is_preferred_when_accepted():
+    path, gz, ctype = static.resolve("/main-ETPGPPCZ.js", True)
+    assert path.endswith(".gz")
+    assert gz
+    # The type is the *file's*, not gzip's - the encoding is a separate header.
+    assert ctype.startswith("text/javascript")
+
+
+def test_gzip_is_not_served_when_not_accepted():
+    path, gz, _ = static.resolve("/main-ETPGPPCZ.js", False)
+    assert not path.endswith(".gz")
+    assert not gz
+
+
+def test_unknown_route_falls_back_to_index():
+    # This is what makes refreshing on /economy work. Angular owns that route;
+    # the board has never heard of it.
+    path, _, ctype = static.resolve("/economy", False)
+    assert path.endswith("index.html")
+    assert ctype.startswith("text/html")
+
+
+def test_query_string_is_ignored():
+    # ?api=... is for the client, not the file system.
+    path, _, _ = static.resolve("/?api=192.168.1.158", False)
+    assert path.endswith("index.html")
+
+
+def test_nested_route_falls_back_to_index():
+    path, _, _ = static.resolve("/some/deep/route", False)
+    assert path.endswith("index.html")
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "/../config.py",
+        "/../../config.py",
+        "/assets/../../config.py",
+        "/..",
+    ],
+)
+def test_traversal_is_refused(attack):
+    # The board's filesystem holds the WiFi password. None of these may reach
+    # it - and none may quietly fall back to index.html either, which would
+    # hide the attempt.
+    assert static.resolve(attack, False) is None
+
+
+def test_path_without_leading_slash_is_refused():
+    assert static.resolve("config.py", False) is None
+
+
+def test_content_types():
+    assert static.content_type("/a.html").startswith("text/html")
+    assert static.content_type("/a.js").startswith("text/javascript")
+    assert static.content_type("/a.css").startswith("text/css")
+    assert static.content_type("/a.woff2") == "font/woff2"
+    assert static.content_type("/a.unknown") == "application/octet-stream"
+    assert static.content_type("/noextension") == "application/octet-stream"
+
+
+def test_hashed_files_are_immutable():
+    assert static.is_hashed("/www/main-ETPGPPCZ.js")
+    assert static.is_hashed("/www/styles-YLJGJUOI.css")
+
+
+def test_index_is_never_immutable():
+    # index.html names the hashed files. Cache it and a browser asks for a
+    # build that no longer exists.
+    assert not static.is_hashed("/www/index.html")
+    assert not static.is_hashed("/www/index.html.gz")
+
+
+def test_unhashed_names_are_not_immutable():
+    assert not static.is_hashed("/www/favicon.ico")
+    assert not static.is_hashed("/www/main.js")
+    assert not static.is_hashed("/www/a-b.js")  # too short to be a hash
+
+
+class FakeConn:
+    def __init__(self):
+        self.written = b""
+
+    def write(self, data):
+        self.written += data
+
+
+def test_send_writes_headers_then_body():
+    conn = FakeConn()
+    status = static.send(conn, "/styles-YLJGJUOI.css", False)
+    assert status == 200
+    head, _, body = conn.written.partition(b"\r\n\r\n")
+    assert b"200 OK" in head
+    assert b"text/css" in head
+    assert b"Content-Length: 6" in head
+    assert b"Content-Encoding" not in head
+    assert body == b"body{}"
+
+
+def test_send_marks_gzip_and_keeps_the_files_type():
+    conn = FakeConn()
+    static.send(conn, "/main-ETPGPPCZ.js", True)
+    head = conn.written.split(b"\r\n\r\n")[0]
+    assert b"Content-Encoding: gzip" in head
+    assert b"text/javascript" in head
+    # Hashed, so it may be cached forever.
+    assert b"immutable" in head
+
+
+def test_send_tells_browsers_not_to_cache_index():
+    conn = FakeConn()
+    static.send(conn, "/", False)
+    head = conn.written.split(b"\r\n\r\n")[0]
+    assert b"no-cache" in head
+    assert b"immutable" not in head
+
+
+def test_send_404s_a_refused_path_rather_than_falling_back():
+    conn = FakeConn()
+    status = static.send(conn, "/../config.py", False)
+    assert status == 404
+    assert b"hunter2" not in conn.written
+
+
+def test_send_404s_when_there_is_no_site(tmp_path, monkeypatch):
+    monkeypatch.setattr(static, "ROOT", str(tmp_path / "empty"))
+    conn = FakeConn()
+    assert static.send(conn, "/", False) == 404
