@@ -59,6 +59,11 @@ TYPES = {
 
 DEFAULT_TYPE = "application/octet-stream"
 
+# A third state for "is this gzipped", beyond True and False: the file on flash
+# is compressed but the client will not accept gzip, so it must be inflated on
+# the way out and served without a Content-Encoding header.
+GZIP_INFLATE = 2
+
 
 def content_type(path):
     """The MIME type for a path, by extension."""
@@ -127,6 +132,13 @@ def resolve(url_path, accepts_gzip):
         return candidate + ".gz", True, ctype
     if _exists(candidate):
         return candidate, False, ctype
+    # Only the compressed copy is on flash - deploy ships whichever of the two
+    # is smaller, which for anything but a tiny file is the .gz. A client that
+    # will not take gzip still has to be served something, so it is inflated on
+    # the way out. Marked GZIP_INFLATE rather than True: the bytes on the wire
+    # are plain, so no Content-Encoding header may be sent.
+    if _exists(candidate + ".gz"):
+        return candidate + ".gz", GZIP_INFLATE, ctype
 
     # SPA fallback. A request for a missing *asset* falls through to here too
     # and gets index.html, which is wrong but harmless: the browser asked for a
@@ -138,6 +150,8 @@ def resolve(url_path, accepts_gzip):
         return index + ".gz", True, TYPES["html"]
     if _exists(index):
         return index, False, TYPES["html"]
+    if _exists(index + ".gz"):
+        return index + ".gz", GZIP_INFLATE, TYPES["html"]
 
     return None
 
@@ -178,7 +192,9 @@ def headers(status, ctype, length, gzipped, cacheable):
         "Content-Length: %d" % length,
         "Connection: close",
     ]
-    if gzipped:
+    # Only a file passed through untouched is declared gzip. An inflated one
+    # goes out as plain bytes and must not claim otherwise.
+    if gzipped is True:
         head.append("Content-Encoding: gzip")
     if cacheable:
         head.append("Cache-Control: public, max-age=31536000, immutable")
@@ -235,6 +251,9 @@ def send(conn, url_path, accepts_gzip):
 
     path, gzipped, ctype = found
 
+    if gzipped is GZIP_INFLATE:
+        return _send_inflated(conn, path, ctype)
+
     try:
         length = _size(path)
     except OSError:
@@ -252,4 +271,64 @@ def send(conn, url_path, accepts_gzip):
             if not chunk:
                 break
             conn.write(chunk)
+    return 200
+
+
+def _inflate(path):
+    """Read a .gz file and return its uncompressed bytes.
+
+    MicroPython has `deflate`; CPython has `gzip`. Both are tried so that the
+    test suite exercises this path on a PC rather than only discovering it on
+    the board - which is the whole reason static.py avoids MicroPython-only
+    spellings elsewhere.
+    """
+    try:
+        import deflate  # MicroPython
+
+        with open(path, "rb") as f:
+            with deflate.DeflateIO(f, deflate.GZIP) as d:
+                return d.read()
+    except ImportError:
+        pass
+
+    import gzip  # CPython
+
+    with gzip.open(path, "rb") as f:
+        return f.read()
+
+
+def _send_inflated(conn, path, ctype):
+    """Serve a .gz file as plain bytes, for a client that will not take gzip.
+
+    Every browser sends `Accept-Encoding: gzip`, so this path is for curl
+    without the header, a proxy that strips it, and anything hand-written. It
+    is the uncommon case, which is what makes the cost acceptable: the
+    inflated size is not known without inflating, and HTTP/1.0 has no chunked
+    encoding to stream an unknown length, so the whole file is decompressed
+    into memory to measure it.
+
+    Bounded by the fact that the largest asset here is a few hundred KB
+    against ~2MB of heap. A build large enough to make that uncomfortable
+    would fail the deploy script's size check first.
+    """
+    try:
+        body = _inflate(path)
+    except ImportError:
+        # No decompressor at all. Refusing is honest; sending compressed bytes
+        # without the header would be silent corruption.
+        body = b"gzip required"
+        conn.write(headers(406, TYPES["txt"], len(body), False, False))
+        conn.write(body)
+        return 406
+    except (OSError, ValueError):
+        body = b"not found"
+        conn.write(headers(404, TYPES["txt"], len(body), False, False))
+        conn.write(body)
+        return 404
+
+    conn.write(headers(200, ctype, len(body), False, is_hashed(path)))
+    # Written in chunks rather than one call: a large single write can fail on
+    # a socket whose send buffer is smaller than the body.
+    for i in range(0, len(body), CHUNK):
+        conn.write(body[i : i + CHUNK])
     return 200

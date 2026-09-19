@@ -23,7 +23,14 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $AngularDir = Join-Path $PSScriptRoot '..\nanacoin\angular'
-$DistDir = Join-Path $AngularDir 'dist\nanacoin-web'
+
+# Angular 22 puts the actual site under dist/<project>/browser/, alongside
+# build metadata (3rdpartylicenses.txt, prerendered-routes.json) that is not
+# part of the site. Publishing the parent would put index.html at
+# /www/browser/index.html, where static.py does not look for it, and ship 18KB
+# of licence text to a board with 4MB of flash.
+$DistRoot = Join-Path $AngularDir 'dist\nanacoin-web'
+$DistDir = Join-Path $DistRoot 'browser'
 
 function Find-Python {
     $candidates = @()
@@ -60,8 +67,20 @@ if (-not $SkipBuild) {
 }
 
 if (-not (Test-Path $DistDir)) {
-    Write-Host "No build at $DistDir" -ForegroundColor Red
-    Write-Host "  Run without -SkipBuild, or build it by hand first."
+    # Older Angular layouts put the site straight in dist/<project>.
+    if (Test-Path (Join-Path $DistRoot 'index.html')) {
+        $DistDir = $DistRoot
+    }
+    else {
+        Write-Host "No build at $DistDir" -ForegroundColor Red
+        Write-Host "  Run without -SkipBuild, or build it by hand first."
+        exit 1
+    }
+}
+
+if (-not (Test-Path (Join-Path $DistDir 'index.html'))) {
+    Write-Host "No index.html in $DistDir" -ForegroundColor Red
+    Write-Host "  The build looks incomplete; check 'npm run build' output."
     exit 1
 }
 
@@ -78,7 +97,7 @@ $stage = Join-Path $env:TEMP "nanacoin-web-stage"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 
-$compressible = @('.html', '.js', '.css', '.json', '.svg', '.txt', '.map')
+$compressible = @('.html', '.js', '.css', '.json', '.svg', '.txt')
 
 $originalBytes = 0
 $shippedBytes = 0
