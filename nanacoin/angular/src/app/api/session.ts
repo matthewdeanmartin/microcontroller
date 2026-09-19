@@ -7,6 +7,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { Accounts } from './accounts';
+import { Log } from './log';
 import { ApiError, NanacoinService } from './nanacoin.service';
 import { Listing, Status, User } from './models';
 
@@ -14,6 +15,7 @@ import { Listing, Status, User } from './models';
 export class Session {
   private readonly api = inject(NanacoinService);
   private readonly accounts = inject(Accounts);
+  private readonly log = inject(Log);
 
   /** Every account this browser is signed into, for the switcher. */
   readonly signedInAccounts = this.accounts.all;
@@ -78,12 +80,19 @@ export class Session {
    * RAM-only by design.
    */
   async restore(): Promise<boolean> {
-    if (!this.api.authenticated) return false;
+    if (!this.api.authenticated) {
+      this.log.info('session', 'nothing to restore; no stored token');
+      return false;
+    }
     try {
       this.me.set(await this.api.me());
       await this.refresh();
+      this.log.info('session', 'restored', { as: this.me()?.username });
       return true;
     } catch {
+      // Not an error worth shouting about: a token that outlived the board's
+      // last reboot is the ordinary case, since sessions are RAM-only.
+      this.log.info('session', 'stored token no longer works; logging in again');
       this.me.set(null);
       return false;
     }
@@ -108,7 +117,14 @@ export class Session {
    * the login screen.
    */
   async switchTo(userId: string): Promise<void> {
-    if (this.accounts.active()?.userId === userId) return;
+    if (this.accounts.active()?.userId === userId) {
+      this.log.debug('session', 'switch to the account already active; nothing to do');
+      return;
+    }
+    this.log.info('session', 'switching account', {
+      from: this.accounts.active()?.username,
+      to: this.accounts.all().find((a) => a.userId === userId)?.username,
+    });
 
     const previous = this.accounts.active();
     this.accounts.activate(userId);
@@ -123,6 +139,9 @@ export class Session {
       // The target's token was dead, and its own 401 has already dropped it.
       // Go back to the account that was working rather than leaving the app
       // signed into nothing while other live sessions are still held.
+      this.log.warn('session', 'the account switched to was not accepted', {
+        fallingBackTo: previous?.username,
+      });
       if (previous && this.accounts.all().some((a) => a.userId === previous.userId)) {
         this.accounts.activate(previous.userId);
         try {

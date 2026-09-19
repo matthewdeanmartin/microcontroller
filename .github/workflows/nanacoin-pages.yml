@@ -1,0 +1,123 @@
+# Publish the NanaCoin demo to GitHub Pages.
+#
+# The demo is the Angular client with an in-memory ledger behind it: no
+# server, no board, nothing to deploy but static files. It lives at a subpath
+# so that the mkdocs site can have the root if it is ever published here too.
+---
+name: Deploy NanaCoin demo
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to publish (branch, tag, or commit SHA)
+        required: true
+        default: main
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - 'nanacoin/angular/**'
+      - '.github/workflows/nanacoin-pages.yml'
+
+# One deployment at a time. A second run while the first is publishing would
+# race it, and the loser silently wins.
+concurrency:
+  group: nanacoin-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and deploy the demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    env:
+      # The repository is not named nanacoin, so Pages serves this project at
+      # /microcontroller/. The demo takes a subpath under it, leaving the root
+      # free for the docs site.
+      BASE_HREF: /microcontroller/nanacoin/
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8  # v5.0.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: nanacoin/angular/package-lock.json
+
+      - name: Install dependencies
+        working-directory: nanacoin/angular
+        run: npm ci
+
+      # The demo has to pass its own tests before it is shown to anyone: the
+      # in-memory ledger enforces the same economic rules the Go server does,
+      # and a demo that gets those wrong is worse than no demo.
+      - name: Test
+        working-directory: nanacoin/angular
+        run: npm test -- --watch=false
+
+      - name: Build the demo
+        working-directory: nanacoin/angular
+        run: npx ng build --configuration demo --base-href "$BASE_HREF"
+
+      # Hash routing means every route is /#/market, so a 404 fallback is not
+      # strictly needed - but a mistyped path should land on the app rather
+      # than on GitHub's own 404 page.
+      - name: Add SPA fallback
+        run: cp nanacoin/angular/dist/nanacoin-web/browser/index.html
+             nanacoin/angular/dist/nanacoin-web/browser/404.html
+
+      # Jekyll would otherwise ignore files beginning with an underscore.
+      - name: Disable Jekyll
+        run: touch nanacoin/angular/dist/nanacoin-web/browser/.nojekyll
+
+      - name: Verify the built demo
+        run: |
+          cd nanacoin/angular/dist/nanacoin-web/browser
+          test -f index.html
+          test -f 404.html
+          grep --fixed-strings '<base href="/microcontroller/nanacoin/">' index.html
+          # The demo flag must actually have been swapped in: without it the
+          # site would deploy and then try to reach a board on someone's LAN.
+          #
+          # The seeded household is what proves it, because that string exists
+          # only in the demo build. The login screen's wording survives
+          # tree-shaking in both builds - it lives in a template branch that is
+          # never taken - so grepping for that would pass either way.
+          grep --quiet --recursive 'Monthly household float' . \
+            || { echo 'not a demo build: the in-memory ledger is missing'; exit 1; }
+
+      - name: Assemble the Pages site
+        run: |
+          mkdir -p .pages-site/nanacoin
+          cp -r nanacoin/angular/dist/nanacoin-web/browser/. .pages-site/nanacoin/
+          touch .pages-site/.nojekyll
+          # A root landing page, so the Pages URL is not a bare 404 until the
+          # docs site is published here as well.
+          cat > .pages-site/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>microcontroller</title>
+          <meta http-equiv="refresh" content="0; url=./nanacoin/">
+          <p><a href="./nanacoin/">NanaCoin demo</a></p>
+          HTML
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b  # v4
+        with:
+          path: .pages-site
+
+      - name: Deploy Pages
+        id: pages
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4

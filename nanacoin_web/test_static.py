@@ -253,3 +253,34 @@ def test_gz_only_route_falls_back_to_an_inflated_index(tmp_path, monkeypatch):
     head, _, body = conn.written.partition(CRLF2)
     assert body == b"<!doctype html>spa"
     assert b"Content-Encoding" not in head
+
+
+# --- API paths are not this board's --------------------------------------
+#
+# The site and the ledger live on different boards. A browser opening this
+# site at a fresh origin has nothing remembered in localStorage, so the client
+# falls back to same-origin and asks THIS board for /api/v1/status. Answering
+# with index.html and a 200 makes that fail as "malformed JSON" with nothing
+# in the console, because nothing actually went wrong at the HTTP level.
+
+
+@pytest.mark.parametrize(
+    "api_path",
+    [
+        "/api/v1/status",
+        "/api/v1/me",
+        "/api/v1/transactions?limit=50",
+    ],
+)
+def test_api_paths_404_rather_than_returning_the_page(api_path):
+    assert static.resolve(api_path, False) is None
+
+    conn = FakeConn()
+    assert static.send(conn, api_path, False) == 404
+    assert b"<!doctype" not in conn.written.lower()
+
+
+def test_a_route_merely_starting_with_api_still_reaches_the_app():
+    # /apiary is a page, not an API call. The check is on the /api/ segment.
+    path, _, _ = static.resolve("/apiary", False)
+    assert path.endswith("index.html")

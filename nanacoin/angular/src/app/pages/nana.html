@@ -1,5 +1,18 @@
 <h2>Household</h2>
 
+<!--
+  A second check behind the route guard, because this page is the one that
+  offers irreversible things - disabling a member, creating a user, issuing
+  coin. The guard redirects a non-Nana away; this makes sure that even if the
+  component is somehow reached, it shows nothing to act on. The server refuses
+  all of it regardless, which is the rule that actually holds.
+-->
+@if (!session.isNana()) {
+  <p class="muted">
+    This is Nana's screen. Ask Nana if you need a member added or coins issued.
+  </p>
+} @else {
+
 @if (session.status() && !session.status()!.ledger_balanced) {
   <p class="warning">
     The ledger does not balance. Something is wrong — do not issue more coins
@@ -148,4 +161,6 @@
       </div>
     }
   </div>
+}
+
 }

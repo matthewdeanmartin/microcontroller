@@ -6,6 +6,8 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 
 import { ApiBase } from './api/api-base';
 import { ApiError } from './api/nanacoin.service';
+import { IS_DEMO } from './demo/demo';
+import { Log } from './api/log';
 import { ConnectForm } from './pages/connect-form';
 import { LoginForm } from './pages/login-form';
 import { LogsPage } from './pages/logs';
@@ -35,11 +37,21 @@ export class App {
   protected readonly session = inject(Session);
   protected readonly apiBase = inject(ApiBase);
   private readonly toasts = inject(Toasts);
+  private readonly log = inject(Log);
+
+  protected readonly isDemo = IS_DEMO;
 
   protected readonly phase = signal<Phase>('loading');
 
   /** Why the connect screen is showing, when an error put it there. */
   protected readonly connectReason = signal('');
+
+  /**
+   * True while the login screen is being used to ADD an account rather than
+   * to sign in from scratch. Changes what that screen says and gives it a way
+   * back, since the two look identical otherwise.
+   */
+  protected readonly addingAccount = signal(false);
 
   /**
    * Whether to offer the logs link on the connect screen.
@@ -59,22 +71,44 @@ export class App {
   );
 
   constructor() {
+    // Recorded once at startup, because it silently changes what the platform
+    // will do. On an insecure origin crypto.subtle does not exist, and the
+    // login has to hash its own PKCE challenge - which worked on localhost
+    // (a secure context by exemption) and threw on the board, where the same
+    // code runs at an IP or an mDNS name.
+    this.log.info('boot', 'page context', {
+      origin: location.origin,
+      secureContext: window.isSecureContext,
+      webCrypto: typeof crypto !== 'undefined' && !!crypto.subtle,
+    });
     void this.boot();
   }
 
   protected async boot(): Promise<void> {
     this.phase.set('loading');
+    this.log.info('boot', 'starting', { api: this.apiBase.description() });
     try {
       const status = await this.session.loadStatus();
+      this.log.info('boot', 'found NanaCoin', {
+        household: status.household,
+        provisioned: status.provisioned,
+        users: status.users,
+      });
       if (!status.provisioned) {
         this.phase.set('setup');
         return;
       }
-      this.phase.set((await this.session.restore()) ? 'app' : 'login');
+      const restored = await this.session.restore();
+      this.phase.set(restored ? 'app' : 'login');
+      this.log.info('boot', `showing the ${restored ? 'app' : 'login'} screen`);
     } catch (e) {
       // Being unable to reach NanaCoin is not a dead end: the address is
       // something the user can supply, so ask for it rather than showing a
       // gateway error they can do nothing about.
+      this.log.error('boot', 'could not reach NanaCoin; asking for an address', {
+        api: this.apiBase.current(),
+        error: e instanceof ApiError ? { status: e.status, code: e.code } : String(e),
+      });
       this.connectReason.set(
         e instanceof ApiError ? e.message : 'Could not reach NanaCoin.',
       );
@@ -113,6 +147,7 @@ export class App {
   }
 
   protected onLoggedIn(): void {
+    this.addingAccount.set(false);
     this.phase.set('app');
   }
 
@@ -136,9 +171,22 @@ export class App {
   /**
    * Shows the login form again to add a second account without leaving the
    * first. onLoggedIn returns to the app, and the new account is active.
+   *
+   * addingAccount is what makes this legible: without it the login screen is
+   * indistinguishable from having been signed out, there is no way back if
+   * you opened it by mistake, and the one thing a parent wants to do here -
+   * hold their own account and Nana's at once - looks like it is not
+   * supported.
    */
   protected addAccount(): void {
+    this.addingAccount.set(true);
     this.phase.set('login');
+  }
+
+  /** Abandons adding an account and returns to the one already signed in. */
+  protected cancelAddAccount(): void {
+    this.addingAccount.set(false);
+    this.phase.set('app');
   }
 
   /** Switches to another signed-in account, or to login if its token died. */

@@ -118,6 +118,53 @@ is connected and misbehaving. Several minutes were lost to that.
 
 ---
 
+## mpremote hangs, and the port is then unusable
+
+The worst failure mode on this board, because it looks like a dead port and is
+not.
+
+**A board running its own `main.py` does not answer the REPL.** A serve loop
+sits in `accept()` forever, so `mpremote` waits for a prompt that never comes.
+It does not time out on its own.
+
+What makes it costly is the second half: that `mpremote` process is blocked in
+a Windows serial read, and **`taskkill /F /T` will not end it** — Windows does
+not terminate a process while a driver call is pending. It keeps the port open.
+Every retry starts another one, so attempting the same command again makes the
+situation strictly worse:
+
+```text
+could not open port 'COM12': PermissionError(13, 'Access is denied.')
+```
+
+Recovery is **physical: unplug the board, wait a few seconds, plug it back
+in.** Nothing on the PC side clears it. A reboot works too, and is the answer
+if the handle survives a replug.
+
+Two habits avoid it entirely:
+
+- **Put a timeout on every `mpremote` call.** `timeout 25 python -m mpremote …`
+  turns a wedged machine into an error message. `deploy.sh` wraps every call
+  this way.
+- **BOOT + RST before deploying**, so the board is at a REPL rather than in its
+  serve loop.
+
+And one rule learned the hard way: **when a serial command hangs, stop.** The
+second attempt does not succeed where the first failed, and each one holds the
+port against the next.
+
+## Deploys must not destroy before they can write
+
+Related, and the same incident: an early `deploy.sh` wiped the board's `/www`
+and *then* copied the new files. The copy failed on a wedged port, and the
+board served 404s until it could be reached again — which required the physical
+replug above.
+
+Stage, then swap. Copy into `/www.new`, and replace `/www` only once every byte
+has landed. A failed deploy then leaves the running site untouched, and the
+destructive step is a few milliseconds at the end rather than the whole
+transfer.
+
 ## Bootloader mode
 
 The ROM bootloader lives in silicon and always works, whatever the flash holds:
@@ -210,6 +257,8 @@ python -m esptool --port COM4 chip-id
 | Symptom | Cause |
 |---|---|
 | No port at all, ever | charge-only cable, or blank/non-USB firmware |
+| mpremote hangs forever | board is in its serve loop; BOOT+RST first |
+| "Access is denied" on the port | a wedged mpremote still holds it; replug |
 | Port vanished after a command | normal; native USB re-enumerates on reset |
 | Port number changed | normal; never hard-code it |
 | "ESP32-S2" with a yellow bang | the JTAG interface, not the serial one |

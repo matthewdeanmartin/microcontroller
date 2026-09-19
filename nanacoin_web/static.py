@@ -140,6 +140,18 @@ def resolve(url_path, accepts_gzip):
     if _exists(candidate + ".gz"):
         return candidate + ".gz", GZIP_INFLATE, ctype
 
+    # An API path is never a route this board can answer. It serves files; the
+    # ledger lives on the other board entirely.
+    #
+    # Without this the SPA fallback returns index.html with a 200, and a client
+    # that has not been told where the API is - a browser opening this site at
+    # a fresh origin, with nothing remembered in localStorage - asks *here* for
+    # /api/v1/status, gets HTML, and fails with "malformed JSON" and nothing in
+    # the console, because from HTTP's point of view nothing went wrong. A 404
+    # is both true and diagnosable.
+    if url_path.startswith("/api/"):
+        return None
+
     # SPA fallback. A request for a missing *asset* falls through to here too
     # and gets index.html, which is wrong but harmless: the browser asked for a
     # file this build does not contain, and either answer is a broken page. The

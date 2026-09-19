@@ -3,8 +3,8 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 
-import { Listing } from '../api/models';
-import { NanacoinService, newIdempotencyKey } from '../api/nanacoin.service';
+import { Listing, ListingSide } from '../api/models';
+import { ApiError, NanacoinService, newIdempotencyKey } from '../api/nanacoin.service';
 import { Session } from '../api/session';
 import { Toasts } from '../ui/toasts';
 
@@ -22,13 +22,73 @@ export class MarketPage {
   protected description = '';
   protected price: number | null = null;
 
+  /** Which way round a new listing is. Selling is the familiar default. */
+  protected side: ListingSide = 'SELL';
+
   protected readonly posting = signal(false);
 
   /** The listing currently being bought, so only its own button shows a spinner. */
   protected readonly buying = signal<string | null>(null);
 
+  /** The listing an offer is being made against. */
+  protected readonly offering = signal<string | null>(null);
+
   protected mine(l: Listing): boolean {
     return l.seller === this.session.me()?.account;
+  }
+
+  /**
+   * Whether this is a want-ad rather than something for sale.
+   *
+   * Absent side means SELL, so listings from a server that predates two-way
+   * listings read as what they are instead of all becoming want-ads.
+   */
+  protected wanted(l: Listing): boolean {
+    return l.side === 'BUY';
+  }
+
+  /**
+   * Proposes a price, or proposes doing the thing in a want-ad.
+   *
+   * The amount is asked for rather than assumed even on a want-ad, where the
+   * poster named a figure: someone may be willing to do it for less, and the
+   * whole point of an offer is that it is negotiable.
+   */
+  protected async offer(l: Listing): Promise<void> {
+    if (this.offering()) return;
+
+    const suggested = String(l.price);
+    const raw = prompt(
+      this.wanted(l)
+        ? `Offer to do "${l.title}".\n\nFor how many coins?`
+        : `Offer on "${l.title}" (asking ${l.price}).\n\nHow many coins?`,
+      suggested,
+    );
+    if (raw === null) return;
+
+    const amount = Number(raw);
+    if (!Number.isInteger(amount) || amount <= 0) {
+      this.toasts.error('Enter a whole number of coins.');
+      return;
+    }
+
+    const message = prompt('Anything to say with it? (optional)', '') ?? '';
+
+    this.offering.set(l.id);
+    try {
+      await this.api.makeOffer(l.id, amount, message.trim(), newIdempotencyKey());
+      this.toasts.ok('Offer sent. It is not a deal until they accept.');
+    } catch (e) {
+      // The board may not have offers yet, which is expected while the UI
+      // runs ahead of the firmware - say so rather than reporting a raw 404.
+      if (e instanceof ApiError && e.status === 404) {
+        this.toasts.error('This NanaCoin does not support offers yet.');
+      } else {
+        this.toasts.fromError(e);
+      }
+    } finally {
+      this.offering.set(null);
+    }
   }
 
   protected affordable(l: Listing): boolean {
@@ -53,11 +113,14 @@ export class MarketPage {
         title: this.title.trim(),
         description: this.description.trim(),
         price,
+        // Only sent when it is a want-ad, so an older server - which has
+        // never heard of side - keeps receiving exactly what it used to.
+        ...(this.side === 'BUY' ? { side: this.side } : {}),
       });
       this.title = '';
       this.description = '';
       this.price = null;
-      this.toasts.ok('Listed.');
+      this.toasts.ok(this.side === 'BUY' ? 'Want-ad posted.' : 'Listed.');
       await this.session.refresh();
     } catch (e) {
       this.toasts.fromError(e);

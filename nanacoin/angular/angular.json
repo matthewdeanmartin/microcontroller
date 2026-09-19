@@ -49,6 +49,27 @@
               "optimization": false,
               "extractLicenses": false,
               "sourceMap": true
+            },
+            "demo": {
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "600kB",
+                  "maximumError": "1MB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "4kB",
+                  "maximumError": "8kB"
+                }
+              ],
+              "outputHashing": "all",
+              "fileReplacements": [
+                {
+                  "replace": "src/app/demo/demo.ts",
+                  "with": "src/app/demo/demo.public.ts"
+                }
+              ]
             }
           },
           "defaultConfiguration": "production"
@@ -61,6 +82,9 @@
             },
             "development": {
               "buildTarget": "nanacoin-web:build:development"
+            },
+            "demo": {
+              "buildTarget": "nanacoin-web:build:demo"
             }
           },
           "defaultConfiguration": "development",

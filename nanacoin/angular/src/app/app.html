@@ -1,5 +1,17 @@
 <app-toast-list />
 
+@if (isDemo) {
+  <!--
+    Said once, at the top, on every screen. Someone who lands here from a link
+    should not have to work out whether the coins are real.
+  -->
+  <p class="demobar">
+    A demonstration. Everything runs in this browser tab — no server, no board,
+    nothing saved. Reload to start over.
+    <a href="https://github.com/matthewdeanmartin/microcontroller/tree/main/nanacoin">Source</a>
+  </p>
+}
+
 @switch (phase()) {
   @case ('loading') {
     <section class="screen screen--centred">
@@ -40,7 +52,13 @@
 
   @case ('login') {
     <section class="screen screen--centred">
-      <app-login-form [household]="household()" (done)="onLoggedIn()" />
+      <app-login-form
+        [household]="household()"
+        [adding]="addingAccount()"
+        [current]="session.me()?.display_name ?? ''"
+        (done)="onLoggedIn()"
+        (cancel)="cancelAddAccount()"
+      />
     </section>
   }
 
@@ -61,9 +79,10 @@
 
         <div class="topbar__actions">
           <!--
-            The switcher only appears once there is something to switch to.
-            A single-account household - which is most of them - sees exactly
-            what it saw before.
+            The switcher appears once there is something to switch to. With
+            one account it would be a dropdown of one, so "Add account" beside
+            it is what advertises that holding several is possible at all -
+            which is the thing nobody could find.
           -->
           @if (session.hasSeveralAccounts()) {
             <label class="switcher">
@@ -98,14 +117,21 @@
       <nav class="tabs" aria-label="Sections">
         <a class="tab" routerLink="/market" routerLinkActive="tab--active">Market</a>
         <a class="tab" routerLink="/send" routerLinkActive="tab--active">Send</a>
+        <a class="tab" routerLink="/offers" routerLinkActive="tab--active">Offers</a>
         <a class="tab" routerLink="/history" routerLinkActive="tab--active">History</a>
         <a class="tab" routerLink="/economy" routerLinkActive="tab--active">Economy</a>
         @if (session.isNana()) {
           <a class="tab" routerLink="/nana" routerLinkActive="tab--active">Household</a>
         }
         @if (session.logsAvailable()) {
-          <a class="tab" routerLink="/logs" routerLinkActive="tab--active">Logs</a>
+          <a class="tab" routerLink="/logs" routerLinkActive="tab--active">Server log</a>
         }
+        <!--
+          The browser's own half of the story. Always available: unlike the
+          server log, it needs no server at all, which is exactly the case it
+          exists for.
+        -->
+        <a class="tab" routerLink="/clientlog" routerLinkActive="tab--active">Browser log</a>
       </nav>
 
       <main>

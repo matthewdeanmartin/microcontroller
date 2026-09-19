@@ -1,4 +1,4 @@
-<h2>For sale</h2>
+<h2>Market</h2>
 
 @if (session.forSale().length === 0) {
   <p class="muted">Nothing for sale right now.</p>
@@ -26,6 +26,14 @@
 
         @if (mine(l)) {
           <button class="btn btn--quiet" (click)="cancel(l)">Cancel listing</button>
+        } @else if (wanted(l)) {
+          <!--
+            A want-ad: they have the money and want the thing. There is
+            nothing to buy, so the only move is to offer to do it.
+          -->
+          <button class="btn" (click)="offer(l)" [disabled]="offering() !== null">
+            {{ offering() === l.id ? 'Offering…' : 'Offer to do this' }}
+          </button>
         } @else {
           <button
             class="btn"
@@ -39,6 +47,19 @@
               Buy for {{ l.price }}
             }
           </button>
+
+          <!--
+            Haggling. Buying at the asking price was the only thing this
+            marketplace could do; an offer is a proposal the seller can turn
+            down, and no money moves until they accept.
+          -->
+          <button
+            class="btn btn--quiet"
+            (click)="offer(l)"
+            [disabled]="offering() !== null"
+          >
+            {{ offering() === l.id ? 'Offering…' : 'Offer a different price' }}
+          </button>
         }
       </article>
     }
@@ -46,12 +67,24 @@
 }
 
 <details class="disclosure">
-  <summary>Sell something</summary>
+  <summary>Post a listing</summary>
   <form (ngSubmit)="post()">
+    <!--
+      Which way round the listing is. Selling was the only option before:
+      there was no way to say "100 coins for peanut butter cookies", which is
+      half of what a household marketplace is for.
+    -->
     <label>
-      What are you offering?
+      I want to
+      <select name="side" [(ngModel)]="side">
+        <option value="SELL">sell or do something</option>
+        <option value="BUY">pay someone to do something</option>
+      </select>
+    </label>
+    <label>
+      {{ side === 'BUY' ? 'What do you want done?' : 'What are you offering?' }}
       <input name="title" [(ngModel)]="title" required maxlength="80"
-             placeholder="One hour of Switch time" />
+             [placeholder]="side === 'BUY' ? 'Peanut butter cookies' : 'One hour of Switch time'" />
     </label>
     <label>
       Details
@@ -59,7 +92,7 @@
              placeholder="Uninterrupted" />
     </label>
     <label>
-      Price in coins
+      {{ side === 'BUY' ? 'How many coins are you offering?' : 'Price in coins' }}
       <input name="price" type="number" min="1" step="1" [(ngModel)]="price" required />
     </label>
     <button class="btn" type="submit" [disabled]="posting()">

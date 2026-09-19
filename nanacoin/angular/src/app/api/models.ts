@@ -73,7 +73,58 @@ export interface Listing {
   currency?: string;
   /** For a currency listing: minor units, e.g. 500 for $5.00. */
   minor_units?: number;
+
+  /**
+   * Which way round the listing is.
+   *
+   * 'SELL' is the original kind: someone offers a thing and wants coins for
+   * it. 'BUY' is the reverse - "100 NanaCoin for peanut butter cookies" -
+   * where the poster has the money and wants the thing.
+   *
+   * Absent means SELL, so a server that predates two-way listings reads
+   * correctly rather than showing every listing as a want-ad.
+   */
+  side?: ListingSide;
 }
+
+export type ListingSide = 'SELL' | 'BUY';
+
+/**
+ * A proposal against a listing, which is not a deal until it is accepted.
+ *
+ * Both directions use it. On a SELL listing an offer is a bid below the
+ * asking price; on a BUY listing it is someone saying "I'll do that for your
+ * 100". Either way the money only moves when the listing's owner accepts,
+ * which is the step the marketplace was missing: before this, the only
+ * transaction available was buying at the asking price, with no way to
+ * propose anything.
+ */
+export interface Offer {
+  id: OfferId;
+  listing: ListingId;
+  listing_title: string;
+  /** Who made the offer. */
+  offerer: AccountId;
+  offerer_name: string;
+  /** What they are proposing, in NanaCoin. */
+  amount: number;
+  /** Optional note - "I can do it Saturday". */
+  message: string;
+  status: OfferStatus;
+  created_at: number;
+  updated_at: number;
+  /** Set once accepted: the transaction that moved the money. */
+  settled_tx?: TransactionId;
+}
+
+export type OfferId = string;
+
+/**
+ * OPEN until the listing's owner decides. ACCEPTED means the money moved and
+ * the listing closed. DECLINED and WITHDRAWN are the two ways it ends without
+ * a deal - by the owner and by the offerer respectively.
+ */
+export type OfferStatus = 'OPEN' | 'ACCEPTED' | 'DECLINED' | 'WITHDRAWN';
 
 export interface Status {
   provisioned: boolean;
@@ -153,4 +204,11 @@ export interface PurchaseResult {
 export interface ApiErrorBody {
   error: string;
   message: string;
+}
+
+/** What accepting an offer returns: the closed offer and the money it moved. */
+export interface OfferResult {
+  offer: Offer;
+  transaction: Transaction;
+  listing: Listing;
 }

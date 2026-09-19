@@ -550,6 +550,127 @@ summary {
   }
 }
 
+/* --- Pick a person (the public demo's login) --- */
+
+.whoami {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.whoami__pick {
+  display: grid;
+  gap: 0.125rem;
+  text-align: left;
+  padding: 0.625rem 0.75rem;
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.whoami__pick:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.whoami__pick:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.whoami__hint {
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+/* A standing note that nothing here is real. */
+.demobar {
+  padding: 0.5rem 0.875rem;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 0.8125rem;
+  text-align: center;
+  border-bottom: 1px solid var(--line);
+}
+
+.demobar a {
+  color: inherit;
+}
+
+/* --- The browser's own log --- */
+
+.logbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+}
+
+.clientlog {
+  display: grid;
+  gap: 1px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.clientlog__row {
+  display: grid;
+  grid-template-columns: 5.5rem 3.5rem 5rem 1fr;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  background: var(--surface);
+  align-items: baseline;
+}
+
+.clientlog__when,
+.clientlog__level,
+.clientlog__scope {
+  color: var(--ink-soft);
+}
+
+.clientlog__row--warn .clientlog__level {
+  color: var(--debit);
+  font-weight: 600;
+}
+
+.clientlog__row--error {
+  background: var(--warn-bg);
+}
+
+.clientlog__row--error .clientlog__level {
+  color: var(--warn-ink);
+  font-weight: 700;
+}
+
+.clientlog__msg {
+  overflow-wrap: anywhere;
+}
+
+.clientlog__detail {
+  color: var(--ink-soft);
+  margin-left: 0.5rem;
+}
+
+/* The log is wide; let it scroll rather than the page. */
+@media (max-width: 640px) {
+  .clientlog__row {
+    grid-template-columns: 4.5rem 1fr;
+  }
+  .clientlog__scope,
+  .clientlog__level {
+    grid-column: 2;
+  }
+}
+
 /* --- Nana's panel --- */
 
 .stats {
