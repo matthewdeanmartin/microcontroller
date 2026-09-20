@@ -32,9 +32,11 @@ listing description strings now default to empty as in Go.
 This is not a claim of byte-for-byte or complete feature parity.
 
 * Go's board currently uses a discarding RAM journal; Rust durably commits each
-  command to NVS. Rust has 4,096 event slots, then returns capacity errors without
-  discarding household state. There is no compaction, batched persistence or Go
-  journal import. A request count is not an erase-cycle count; the owner's
+  command to NVS. Rust now checkpoints and retires its journal at 2,048 changes,
+  preserving current state, recent history and bounded retry receipts. Nana
+  can close the journal early or reset the economy to provisioning. See
+  [RETENTION.md](RETENTION.md) for generation-aware client keys and recovery.
+  There is no daily write batching or Go journal import. A request count is not an erase-cycle count; the owner's
   conservative 100,000-cycle flash design budget still needs wear/write-
   amplification measurements before long-term use.
 * Go's packed text arena can evict ledger records before its 365-record count
@@ -60,7 +62,8 @@ This is not a claim of byte-for-byte or complete feature parity.
   Rust rejects malformed side values and unknown request fields rather than
   silently defaulting them. Ordinary Rust amounts remain capped at one billion.
 * Existing Rust journal events retain their IDs and encoding. Forex cash-leg
-  transaction IDs use event sequence + 4096, a range disjoint from ordinary
+  transaction IDs use event sequence + 4096; event sequences skip alternating
+  4096-ID blocks to keep this range disjoint from ordinary
   transaction IDs; IDs are opaque and must not be sorted numerically. The
   ledger response already supplies chronological order. Old events lacking
   timestamps/metadata replay with zero/default values.

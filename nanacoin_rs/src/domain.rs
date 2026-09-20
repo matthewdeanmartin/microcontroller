@@ -12,6 +12,13 @@ pub const LISTINGS: usize = 48;
 pub const HISTORY: usize = 365;
 pub const MAX_AMOUNT: i64 = 1_000_000_000;
 pub const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
+/// Preserve legacy cash-leg IDs (event + 4096), reserving alternating blocks
+/// for cash legs as the event journal grows beyond its original capacity.
+pub fn next_sequence(sequence: u64) -> Option<u64> {
+    sequence
+        .checked_add(if sequence % 8192 == 4096 { 4097 } else { 1 })
+        .filter(|s| *s <= MAX_SEQUENCE - 4096)
+}
 pub type Name = String<40>;
 pub type Memo = String<96>;
 /// Ledger text also holds the TinyGo offer-undo reason (up to 140 bytes).
@@ -187,7 +194,7 @@ pub enum ListingStatus {
     Cancelled,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Member {
     pub id: MemberId,
     pub name: Name,
@@ -201,11 +208,11 @@ pub struct Member {
     pub created_at: u64,
     pub last_request: u64,
     #[serde(skip)]
-    token_hash: TokenHash,
+    pub(crate) token_hash: TokenHash,
     #[serde(skip)]
-    last_command: TokenHash,
+    pub(crate) last_command: TokenHash,
     #[serde(skip)]
-    last_sequence: u64,
+    pub(crate) last_sequence: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,7 +226,7 @@ pub struct ListingDetails {
     pub minor_units: i64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Listing {
     pub id: u64,
     pub owner: MemberId,
@@ -235,7 +242,7 @@ pub struct Listing {
     pub updated_at: u64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Transaction {
     pub id: u64,
     pub actor: MemberId,
@@ -323,6 +330,23 @@ impl Default for State {
 }
 
 impl State {
+    /// Reset in place: retain fixed capacities and avoid a large stack copy.
+    pub(crate) fn clear_economy(&mut self) {
+        self.household_name.clear();
+        self.initial_grant = 100;
+        self.currency = Name::try_from("NanaCoin").unwrap();
+        self.offer_settles_after = DEFAULT_SETTLEMENT;
+        self.last_timestamp = 0;
+        self.sequence = 0;
+        self.transactions = 0;
+        self.issuance_balance = 0;
+        self.usd_issuance_balance = 0;
+        self.members.clear();
+        self.listings.clear();
+        self.offers.clear();
+        self.quotes.clear();
+        self.history.clear();
+    }
     /// For the local migration tool only; never used for API authentication.
     pub fn authenticate_legacy(&self, token: &str) -> Result<MemberId, Error> {
         let hash = token_hash(token).map_err(|_| Error::Unauthorized)?;
@@ -670,7 +694,7 @@ impl State {
     /// infallible after validation, so failed storage never changes RAM.
     pub fn replay(&mut self, event: &Event) -> Result<(), Error> {
         if event.version != 1
-            || event.sequence != self.sequence + 1
+            || Some(event.sequence) != next_sequence(self.sequence)
             || event.sequence > MAX_SEQUENCE
             || event.request_id == 0
             || event.request_id > MAX_SEQUENCE
@@ -1059,7 +1083,7 @@ fn valid_name(name: &str) -> Result<(), Error> {
     }
 }
 
-fn fingerprint(command: &Command) -> TokenHash {
+pub(crate) fn fingerprint(command: &Command) -> TokenHash {
     let mut buffer = [0; 2048];
     let len =
         serde_json_core::to_slice(command, &mut buffer).expect("bounded command fits event buffer");

@@ -88,6 +88,14 @@ impl Default for Auth {
     }
 }
 
+impl Auth {
+    pub(crate) fn clear(&mut self) {
+        self.sessions.fill(None);
+        self.codes.fill(None);
+        self.failures.fill(None);
+    }
+}
+
 pub fn digest(value: &str) -> [u8; 32] {
     Sha256::digest(value.as_bytes()).into()
 }

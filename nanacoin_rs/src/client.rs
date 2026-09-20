@@ -200,7 +200,13 @@ fn listing<'a>(state: &'a State, l: &'a Listing) -> ListingView<'a> {
     }
 }
 
-pub(crate) fn status(state: &State, output: &mut [u8]) -> Result<usize, Error> {
+pub(crate) fn status(
+    state: &State,
+    records: usize,
+    generation: u64,
+    checkpoint_supported: bool,
+    output: &mut [u8],
+) -> Result<usize, Error> {
     #[derive(Serialize)]
     struct Status<'a> {
         provisioned: bool,
@@ -215,6 +221,8 @@ pub(crate) fn status(state: &State, output: &mut [u8]) -> Result<usize, Error> {
         circulation: i64,
         journal_used: u64,
         journal_capacity: usize,
+        journal_generation: u64,
+        checkpoint_supported: bool,
         ledger_balanced: bool,
         logs_enabled: bool,
         diag_enabled: bool,
@@ -240,11 +248,17 @@ pub(crate) fn status(state: &State, output: &mut [u8]) -> Result<usize, Error> {
                 .filter(|l| l.status == ListingStatus::Active)
                 .count(),
             circulation: -state.issuance_balance,
-            journal_used: state.sequence * FRAME_SIZE as u64,
-            journal_capacity: MAX_RECORDS * FRAME_SIZE,
+            journal_used: (records * FRAME_SIZE) as u64,
+            journal_capacity: if checkpoint_supported {
+                2048 * FRAME_SIZE
+            } else {
+                MAX_RECORDS * FRAME_SIZE
+            },
+            journal_generation: generation,
+            checkpoint_supported,
             ledger_balanced: state.check_invariants().is_ok(),
             logs_enabled: false,
-            diag_enabled: false,
+            diag_enabled: cfg!(target_os = "espidf"),
             login_migration_required: state.needs_login_migration(),
         },
         output,

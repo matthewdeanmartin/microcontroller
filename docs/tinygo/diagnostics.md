@@ -1,5 +1,13 @@
 # Diagnostics and load tests
 
+The shared Machine health page now accepts TinyGo's `/api/v1/diag` and
+`/api/v1/diag/static`. TinyGo samples its managed heap on request on the single
+active core, preserving its original crash/trend fields. Unsupported hardware
+metrics are unavailable, and PSRAM is explicitly disabled. Static metadata
+does not pretend to enumerate flash partitions. See the
+[parallel Rust/TinyGo diagnostic explanation](../rust/diagnostics.md) for the
+wire format, memory bounds and differing sampling models.
+
 "The site stopped responding" is an observation, not a diagnosis. It can mean
 the board ran out of memory, the listener exhausted its connections, a worker
 stalled, the radio lost contact, or the browser refused the request before

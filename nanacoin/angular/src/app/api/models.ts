@@ -145,6 +145,8 @@ export interface Status {
   circulation: number;
   journal_used: number;
   journal_capacity: number;
+  journal_generation?: number;
+  checkpoint_supported?: boolean;
   /** False means the ledger does not add up and nobody should trust it. */
   ledger_balanced: boolean;
 

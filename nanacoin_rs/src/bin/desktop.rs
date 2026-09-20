@@ -23,7 +23,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = Server::http(&address)?;
     let mut output = vec![0u8; api::RESPONSE_LIMIT].into_boxed_slice();
     println!("NanaCoin: http://{address} (loopback development server)");
-    let origins = std::env::var("NANACOIN_ORIGINS").unwrap_or_else(|_| api::DEFAULT_ORIGINS.into());
+    let origins = format!(
+        "{},http://{address},http://localhost:{port}",
+        std::env::var("NANACOIN_ORIGINS").unwrap_or_else(|_| api::DEFAULT_ORIGINS.into())
+    );
     loop {
         let Some(request) = server.recv_timeout(Duration::from_secs(1))? else {
             continue;
@@ -40,6 +43,35 @@ fn serve(
     output: &mut [u8],
     origins: &str,
 ) -> std::io::Result<()> {
+    let reply = if service.https_only() {
+        nanacoin::web::onboarding(request.method().as_str(), request.url(), true)
+    } else {
+        nanacoin::web::respond(
+            request.method().as_str(),
+            request.url(),
+            request
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("Accept-Encoding"))
+                .map(|h| h.value.as_str())
+                .unwrap_or(""),
+            request
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("If-None-Match"))
+                .map(|h| h.value.as_str())
+                .unwrap_or(""),
+        )
+    };
+    if let Some(reply) = reply {
+        return request.respond(Response::new(
+            reply.status.into(),
+            reply.headers.iter().map(|(k, v)| header(k, v)).collect(),
+            reply.bytes,
+            Some(reply.bytes.len()),
+            None,
+        ));
+    }
     let origin = request
         .headers()
         .iter()
@@ -96,7 +128,7 @@ fn serve(
                     .find(|h| h.field.equiv("Idempotency-Key"))
                     .map(|h| h.value.as_str())
                     .unwrap_or("");
-                api::handle_keyed(
+                api::handle_keyed_on(
                     service,
                     &method,
                     request.url(),
@@ -104,10 +136,19 @@ fn serve(
                     key,
                     &body[..length],
                     output,
+                    false,
                 )
             }
         }
     };
+    headers.push(header(
+        "X-Nanacoin-Generation",
+        &service.generation().to_string(),
+    ));
+    headers.push(header(
+        "Access-Control-Expose-Headers",
+        "X-Nanacoin-Generation",
+    ));
     request.respond(Response::new(
         status.into(),
         headers,

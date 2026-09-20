@@ -2,10 +2,12 @@
 // logged out, or running - and renders the frame around the routed page.
 
 import { Component, computed, inject, signal } from '@angular/core';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 
 import { ApiBase } from './api/api-base';
 import { ApiError } from './api/nanacoin.service';
+import { candidates, Discovery } from './api/discovery';
 import { IS_DEMO } from './demo/demo';
 import { Log } from './api/log';
 import { ConnectForm } from './pages/connect-form';
@@ -16,6 +18,8 @@ import { SetupForm } from './pages/setup-form';
 import { DialogHost } from './ui/dialog-host';
 import { ToastList } from './ui/toast-list';
 import { Toasts } from './ui/toasts';
+import { SiteMenu } from './ui/site-menu';
+import { KeyboardHelp } from './ui/keyboard-help';
 
 type Phase = 'loading' | 'connect' | 'setup' | 'login' | 'app' | 'logs';
 
@@ -23,8 +27,8 @@ type Phase = 'loading' | 'connect' | 'setup' | 'login' | 'app' | 'logs';
   selector: 'app-root',
   imports: [
     RouterOutlet,
-    RouterLink,
-    RouterLinkActive,
+    SiteMenu,
+    KeyboardHelp,
     ConnectForm,
     LoginForm,
     LogsPage,
@@ -36,12 +40,18 @@ type Phase = 'loading' | 'connect' | 'setup' | 'login' | 'app' | 'logs';
   styleUrl: './app.css',
 })
 export class App {
+  protected readonly publicPage = signal(false);
+  private readonly router = inject(Router);
   protected readonly session = inject(Session);
   protected readonly apiBase = inject(ApiBase);
   private readonly toasts = inject(Toasts);
   private readonly log = inject(Log);
+  private readonly discovery = inject(Discovery);
+  private readonly discoveryLifetime = new AbortController();
 
   protected readonly isDemo = IS_DEMO;
+  protected readonly plainHttp = computed(() =>
+    location.protocol !== 'https:' || new URL(this.apiBase.current(), location.href).protocol !== 'https:');
 
   protected readonly phase = signal<Phase>('loading');
 
@@ -73,6 +83,13 @@ export class App {
   );
 
   constructor() {
+    this.router.events.pipe(takeUntilDestroyed()).subscribe(event => {
+      if (event instanceof NavigationEnd) {
+        const path = event.urlAfterRedirects.split('?')[0];
+        this.publicPage.set(['/about', '/recipes', '/ledger'].includes(path)
+          || (IS_DEMO && path === '/diagnostics'));
+      }
+    });
     // Recorded once at startup, because it silently changes what the platform
     // will do. On an insecure origin crypto.subtle does not exist, and the
     // login has to hash its own PKCE challenge - which worked on localhost
@@ -86,7 +103,7 @@ export class App {
     void this.boot();
   }
 
-  protected async boot(): Promise<void> {
+  protected async boot(allowDiscovery = true): Promise<void> {
     this.phase.set('loading');
     this.log.info('boot', 'starting', { api: this.apiBase.description() });
     try {
@@ -104,6 +121,19 @@ export class App {
       this.phase.set(restored ? 'app' : 'login');
       this.log.info('boot', `showing the ${restored ? 'app' : 'login'} screen`);
     } catch (e) {
+      // A default or remembered HTTP endpoint may now run Rust over HTTPS.
+      // Prove a candidate using only public status before changing ApiBase.
+      if (allowDiscovery && !this.isDemo && (!(e instanceof ApiError) || e.isNetwork || e.code === 'not_nanacoin')) {
+        const meta = document.querySelector('meta[name="nanacoin-api"]')?.getAttribute('content') ?? '';
+        const found = await this.discovery.find(candidates(this.apiBase.current(), meta),
+          this.discoveryLifetime.signal, () => {});
+        if (this.discoveryLifetime.signal.aborted) return;
+        if (found) {
+          this.apiBase.set(found);
+          await this.boot(false);
+          return;
+        }
+      }
       // Being unable to reach NanaCoin is not a dead end: the address is
       // something the user can supply, so ask for it rather than showing a
       // gateway error they can do nothing about.
@@ -117,6 +147,8 @@ export class App {
       this.phase.set('connect');
     }
   }
+
+  ngOnDestroy(): void { this.discoveryLifetime.abort(); }
 
   /** Called once the connect screen has proved an address answers. */
   protected onConnected(): void {

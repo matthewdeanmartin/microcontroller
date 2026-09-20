@@ -1,5 +1,11 @@
 <app-toast-list />
 <app-dialog-host />
+@if (!isDemo) {
+  <p class="demobar">
+    {{ plainHttp() ? 'Unencrypted home connection — use only on a network you trust.' : 'HTTPS connection — household HTTP access may still be enabled.' }}
+    <a href="http://nanacoin.local/trust" target="_blank" rel="noopener noreferrer">Set up trusted HTTPS</a>
+  </p>
+}
 
 @if (isDemo) {
   <!--
@@ -13,6 +19,10 @@
   </p>
 }
 
+<app-site-menu />
+@if (publicPage()) {
+  <main class="screen"><router-outlet /></main>
+} @else {
 @switch (phase()) {
   @case ('loading') {
     <section class="screen screen--centred">
@@ -115,37 +125,20 @@
         </div>
       </header>
 
-      <nav class="tabs" aria-label="Sections">
-        <a class="tab" routerLink="/market" routerLinkActive="tab--active">Market</a>
-        <a class="tab" routerLink="/send" routerLinkActive="tab--active">Send</a>
-        <a class="tab" routerLink="/offers" routerLinkActive="tab--active">Offers</a>
-        <a class="tab" routerLink="/forex" routerLinkActive="tab--active">Exchange</a>
-        <a class="tab" routerLink="/history" routerLinkActive="tab--active">History</a>
-        <a class="tab" routerLink="/economy" routerLinkActive="tab--active">Economy</a>
-        @if (session.isNana()) {
-          <a class="tab" routerLink="/nana" routerLinkActive="tab--active">Household</a>
-        }
-        @if (session.logsAvailable()) {
-          <a class="tab" routerLink="/logs" routerLinkActive="tab--active">Server log</a>
-        }
-        <!--
-          The browser's own half of the story. Always available: unlike the
-          server log, it needs no server at all, which is exactly the case it
-          exists for.
-        -->
-        <a class="tab" routerLink="/clientlog" routerLinkActive="tab--active">Browser log</a>
-      </nav>
-
       <main>
         <router-outlet />
       </main>
 
       <footer class="apinote">
-        Connected to <code>{{ apiBase.description() }}</code>
+        {{ isDemo ? 'Fictional economy in this browser tab; no board connected.' : 'Connected to ' + apiBase.description() }}
+        @if (!isDemo) {
         <button class="btn btn--quiet btn--small" (click)="changeServer()">
           Change server
         </button>
+        }
       </footer>
     </div>
   }
 }
+}
+<app-keyboard-help />

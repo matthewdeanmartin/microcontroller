@@ -76,6 +76,33 @@ struct UpdateMember {
     role: Option<Role>,
     disabled: Option<bool>,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StorageAction {
+    expected_generation: u64,
+    expected_sequence: u64,
+    confirmation: Option<String<32>>,
+}
+
+#[derive(Serialize)]
+struct StorageStatus {
+    generation: u64,
+    sequence: u64,
+    journal_records: usize,
+    checkpoint_after: usize,
+    checkpoint_supported: bool,
+}
+
+fn storage_status<J: Journal>(service: &Service<J>) -> StorageStatus {
+    StorageStatus {
+        generation: service.generation(),
+        sequence: service.state.sequence,
+        journal_records: service.journal_records(),
+        checkpoint_after: 2048,
+        checkpoint_supported: service.checkpoint_supported(),
+    }
+}
 #[derive(Serialize)]
 struct View<'a> {
     member: MemberId,
@@ -93,6 +120,23 @@ pub fn handle<J: Journal>(
 ) -> (u16, usize) {
     handle_keyed(service, method, path, authorization, "", body, output)
 }
+#[allow(clippy::too_many_arguments)]
+pub fn handle_keyed_on<J: Journal>(
+    service: &mut Service<J>,
+    method: &str,
+    path: &str,
+    authorization: &str,
+    key: &str,
+    body: &[u8],
+    output: &mut [u8],
+    tls: bool,
+) -> (u16, usize) {
+    if !tls && (service.https_only() || (method == "POST" && path == "/api/v1/admin/transport")) {
+        return error_response(Error::Forbidden, output);
+    }
+    handle_keyed(service, method, path, authorization, key, body, output)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn handle_keyed<J: Journal>(
     service: &mut Service<J>,
@@ -115,8 +159,28 @@ pub fn handle_keyed<J: Journal>(
         }
         let now = service.auth.now();
         match (method, path) {
+            ("GET", "/api/v1/transport") => {
+                #[derive(Serialize)]
+                struct Policy {
+                    https_only: bool,
+                    supported: bool,
+                }
+                return serialize(
+                    &Policy {
+                        https_only: service.https_only(),
+                        supported: service.supports_transport(),
+                    },
+                    output,
+                );
+            }
             ("GET", "/api/v1/status") => {
-                return crate::client::status(&service.state, output);
+                return crate::client::status(
+                    &service.state,
+                    service.journal_records(),
+                    service.generation(),
+                    service.checkpoint_supported(),
+                    output,
+                );
             }
             ("POST", "/api/v1/provision") => {
                 if !service.state.members.is_empty() {
@@ -198,6 +262,41 @@ pub fn handle_keyed<J: Journal>(
             .strip_prefix("Bearer ")
             .ok_or(Error::Unauthorized)?;
         let actor = service.auth.lookup(&service.state, token, now)?;
+        if path == "/api/v1/admin/transport" && method == "POST" {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Action {
+                confirmation: heapless::String<32>,
+            }
+            let action: Action = parse(body)?;
+            if action.confirmation.as_str() != "REQUIRE HTTPS" {
+                return Err(Error::InvalidInput);
+            }
+            service.require_https(actor)?;
+            return serialize(&true, output);
+        }
+        if path == "/api/v1/admin/storage" && method == "GET" {
+            service.state.admin(actor)?;
+            return serialize(&storage_status(service), output);
+        }
+        if method == "POST" && matches!(path, "/api/v1/admin/checkpoint" | "/api/v1/admin/reset") {
+            service.state.admin(actor)?;
+            let action: StorageAction = parse(body)?;
+            if action.expected_generation != service.generation()
+                || action.expected_sequence != service.state.sequence
+            {
+                return Err(Error::Conflict);
+            }
+            if path.ends_with("/reset") {
+                if action.confirmation.as_deref() != Some("RESET ECONOMY") {
+                    return Err(Error::InvalidInput);
+                }
+                service.reset_economy(actor)?;
+            } else {
+                service.checkpoint(actor)?;
+            }
+            return serialize(&storage_status(service), output);
+        }
         match (method, path) {
             ("GET", "/api/v1/state") => {
                 service.state.admin(actor)?;

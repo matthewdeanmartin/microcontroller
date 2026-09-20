@@ -241,6 +241,7 @@ func main() {
 	// with no cable attached, so a crash record that can only be read over
 	// USB is a crash record nobody reads.
 	srv.SetDiagnostics(boardDiagnostics)
+	srv.SetMachineInfo(boardMachineInfo)
 
 	// The same handler the desktop serves, adapted onto httphi. The origin
 	// list is passed separately so the adapter can answer requests the

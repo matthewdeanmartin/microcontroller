@@ -61,6 +61,25 @@ fn aliases(key: &str) -> &'static [&'static str] {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=NANACOIN_RECOVER_HTTP");
+    let recovery = std::env::var("NANACOIN_RECOVER_HTTP").unwrap_or_else(|_| "0".into());
+    assert!(matches!(recovery.as_str(), "0" | "1"));
+    println!("cargo:rustc-env=NANACOIN_RECOVER_HTTP={recovery}");
+    println!("cargo:rerun-if-changed=build.rs");
+    if std::env::var_os("CARGO_FEATURE_BUNDLED_WEB").is_some() {
+        let assets =
+            PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join(".embuild/web");
+        assert!(
+            assets.join("assets.rs").exists(),
+            "Run bash scripts/build-web.sh before building with bundled-web"
+        );
+        println!("cargo:rerun-if-changed={}", assets.display());
+        std::fs::copy(
+            assets.join("assets.rs"),
+            PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("assets.rs"),
+        )
+        .unwrap();
+    }
     #[cfg(feature = "esp32")]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("espidf") {
         embuild::espidf::sysenv::output();
@@ -104,6 +123,6 @@ fn main() {
         }
     }
 
-    println!("cargo:rerun-if-changed=certs/server.crt");
-    println!("cargo:rerun-if-changed=certs/server.key");
+    println!("cargo:rerun-if-changed=certs/nanacoin-ca-signed.crt");
+    println!("cargo:rerun-if-changed=certs/nanacoin-ca-signed.key");
 }

@@ -1,4 +1,8 @@
-use crate::domain::{Command, Error, Event, MemberId, Receipt, State, MAX_SEQUENCE};
+use crate::domain::{Command, Error, Event, MemberId, Receipt, State};
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+
+pub mod checkpoint;
 
 pub const FRAME_SIZE: usize = 1024;
 pub const MAX_RECORDS: usize = 4096;
@@ -6,8 +10,42 @@ pub const MAX_RECORDS: usize = 4096;
 /// A successful append means durable storage. An error may be ambiguous;
 /// Service latches read-only until restart/replay instead of reusing the slot.
 pub trait Journal {
+    fn https_only(&self) -> bool {
+        false
+    }
+    fn supports_transport(&self) -> bool {
+        false
+    }
+    fn set_https_only(&mut self, _: bool) -> Result<(), Error> {
+        Err(Error::Storage)
+    }
     fn read(&mut self, index: usize, frame: &mut [u8; FRAME_SIZE]) -> Result<bool, Error>;
     fn append(&mut self, index: usize, frame: &[u8; FRAME_SIZE]) -> Result<(), Error>;
+    fn generation(&self) -> u64 {
+        0
+    }
+    fn checkpoint_rows(&self) -> usize {
+        0
+    }
+    fn supports_checkpoint(&self) -> bool {
+        false
+    }
+    fn read_checkpoint(
+        &mut self,
+        _: usize,
+        _: &mut [u8; checkpoint::ROW_BYTES],
+    ) -> Result<usize, Error> {
+        Err(Error::Storage)
+    }
+    fn begin_checkpoint(&mut self) -> Result<(), Error> {
+        Err(Error::Capacity)
+    }
+    fn write_checkpoint(&mut self, _: usize, _: &[u8]) -> Result<(), Error> {
+        Err(Error::Storage)
+    }
+    fn commit_checkpoint(&mut self, _: usize) -> Result<(), Error> {
+        Err(Error::Storage)
+    }
 }
 
 pub struct Service<J> {
@@ -18,14 +56,18 @@ pub struct Service<J> {
     journal: J,
     records: usize,
     storage_failed: bool,
-    keyed: std::vec::Vec<KeyReceipt>,
+    https_only: bool,
+    keyed: VecDeque<KeyReceipt>,
     clock: fn() -> u64,
 }
 
-struct KeyReceipt {
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct KeyReceipt {
     key: [u8; 32],
     actor: MemberId,
-    index: usize,
+    command: [u8; 32],
+    sequence: u64,
+    timestamp: u64,
 }
 
 impl<J: Journal> Service<J> {
@@ -34,10 +76,12 @@ impl<J: Journal> Service<J> {
     }
 
     pub fn open_with_clock(mut journal: J, clock: fn() -> u64) -> Result<Self, Error> {
+        let https_only = journal.https_only();
         let mut state = Box::new(State::default());
         let mut frame = [0; FRAME_SIZE];
         let mut records = 0;
-        let mut keyed = std::vec::Vec::with_capacity(MAX_RECORDS);
+        let mut keyed = VecDeque::with_capacity(MAX_RECORDS);
+        checkpoint::restore(&mut journal, &mut state, &mut keyed)?;
         while records < MAX_RECORDS && journal.read(records, &mut frame)? {
             let event = decode(&frame)?;
             state.replay(&event)?;
@@ -48,10 +92,15 @@ impl<J: Journal> Service<J> {
                 {
                     return Err(Error::CorruptJournal);
                 }
-                keyed.push(KeyReceipt {
+                if keyed.len() == MAX_RECORDS {
+                    keyed.pop_front();
+                }
+                keyed.push_back(KeyReceipt {
                     key,
                     actor: event.actor,
-                    index: records,
+                    command: crate::domain::fingerprint(&event.command),
+                    sequence: event.sequence,
+                    timestamp: event.timestamp,
                 });
             }
             records += 1;
@@ -63,6 +112,7 @@ impl<J: Journal> Service<J> {
             journal,
             records,
             storage_failed: false,
+            https_only,
             keyed,
             clock,
         })
@@ -75,6 +125,73 @@ impl<J: Journal> Service<J> {
         self.storage_failed
     }
 
+    pub fn generation(&self) -> u64 {
+        self.journal.generation()
+    }
+    pub fn https_only(&self) -> bool {
+        self.https_only
+    }
+    pub fn supports_transport(&self) -> bool {
+        self.journal.supports_transport()
+    }
+    pub fn require_https(&mut self, actor: MemberId) -> Result<(), Error> {
+        self.state.admin(actor)?;
+        if !self.supports_transport() || self.storage_failed {
+            return Err(Error::Storage);
+        }
+        self.https_only = true;
+        self.auth.clear();
+        if self.journal.set_https_only(true).is_err() {
+            self.storage_failed = true;
+            return Err(Error::Storage);
+        }
+        Ok(())
+    }
+    pub fn journal_records(&self) -> usize {
+        self.records
+    }
+    pub fn checkpoint_supported(&self) -> bool {
+        self.journal.supports_checkpoint()
+    }
+
+    /// Caller holds the service mutex. A failed/ambiguous storage operation
+    /// latches the service until restart; never continue from uncertain state.
+    pub fn checkpoint(&mut self, actor: MemberId) -> Result<(), Error> {
+        self.state.admin(actor)?;
+        self.rotate(false)
+    }
+
+    pub fn reset_economy(&mut self, actor: MemberId) -> Result<(), Error> {
+        self.state.admin(actor)?;
+        self.rotate(true)
+    }
+
+    fn rotate(&mut self, reset: bool) -> Result<(), Error> {
+        if self.storage_failed {
+            return Err(Error::Storage);
+        }
+        if !self.journal.supports_checkpoint() {
+            return Err(Error::Capacity);
+        }
+        let result = if reset {
+            checkpoint::save_empty(&mut self.journal)
+        } else {
+            self.state.check_invariants()?;
+            checkpoint::save(&mut self.journal, &self.state, &self.keyed)
+        };
+        if result.is_err() {
+            self.storage_failed = true;
+            return Err(Error::Storage);
+        }
+        self.records = 0;
+        if reset {
+            self.state.clear_economy();
+            self.keyed.clear();
+            self.auth.clear();
+        }
+        Ok(())
+    }
+
     /// A clock earlier than the last durable event is unavailable for timed deals.
     pub fn now(&self) -> u64 {
         let now = (self.clock)();
@@ -85,18 +202,15 @@ impl<J: Journal> Service<J> {
         }
     }
 
-    pub(crate) fn event(&mut self, sequence: u64) -> Result<Event, Error> {
+    pub(crate) fn event_timestamp(&mut self, sequence: u64) -> Result<u64, Error> {
         if self.storage_failed {
             return Err(Error::Storage);
         }
-        if sequence == 0 || sequence > self.records as u64 {
-            return Err(Error::NotFound);
-        }
-        let mut frame = [0; FRAME_SIZE];
-        if !self.journal.read(sequence as usize - 1, &mut frame)? {
-            return Err(Error::CorruptJournal);
-        }
-        decode(&frame)
+        self.keyed
+            .iter()
+            .find(|r| r.sequence == sequence)
+            .map(|r| r.timestamp)
+            .ok_or(Error::StaleRequest)
     }
 
     pub fn execute(
@@ -108,8 +222,8 @@ impl<J: Journal> Service<J> {
         self.commit(actor, request_id, command, None)
     }
 
-    /// Legacy HTTP idempotency keys are retained for the whole bounded journal.
-    /// On retry, compare with the durable original command, not a lossy cache.
+    /// Durable bounded retry receipts survive checkpoints. Command hashes
+    /// reject altered retries; generation tags reject evicted ancient keys.
     pub fn execute_keyed(
         &mut self,
         actor: MemberId,
@@ -122,23 +236,31 @@ impl<J: Journal> Service<J> {
         if key.is_empty() || key.len() > 80 {
             return Err(Error::InvalidInput);
         }
-        let key = crate::auth::digest(key);
-        if let Some(receipt) = self.keyed.iter().find(|r| r.actor == actor && r.key == key) {
-            let mut frame = [0; FRAME_SIZE];
-            if !self.journal.read(receipt.index, &mut frame)? {
-                return Err(Error::CorruptJournal);
-            }
-            let event = decode(&frame)?;
-            if event.command != command {
+        let digest = crate::auth::digest(key);
+        if let Some(receipt) = self
+            .keyed
+            .iter()
+            .find(|r| r.actor == actor && r.key == digest)
+        {
+            if receipt.command != crate::domain::fingerprint(&command) {
                 return Err(Error::Conflict);
             }
             return Ok(Receipt {
-                sequence: event.sequence,
+                sequence: receipt.sequence,
                 replayed: true,
             });
         }
+        // Keys from retired generations may be retried only while a receipt
+        // remains. Never interpret an ancient retry as a fresh payment.
+        let epoch = key
+            .strip_prefix('g')
+            .and_then(|k| k.split_once(':'))
+            .and_then(|(n, _)| n.parse::<u64>().ok());
+        if epoch.unwrap_or(0) != self.generation() {
+            return Err(Error::StaleRequest);
+        }
         let request_id = self.state.member(actor)?.last_request + 1;
-        self.commit(actor, request_id, command, Some(key))
+        self.commit(actor, request_id, command, Some(digest))
     }
 
     fn commit(
@@ -154,17 +276,15 @@ impl<J: Journal> Service<J> {
         if let Some(receipt) = self.state.retry(actor, request_id, &command)? {
             return Ok(receipt);
         }
+        let now = self.now();
+        self.state.validate_at(actor, &command, now)?;
+        if self.records >= 2048 && self.journal.supports_checkpoint() {
+            self.rotate(false)?;
+        }
         if self.records == MAX_RECORDS {
             return Err(Error::Capacity);
         }
-        let now = self.now();
-        self.state.validate_at(actor, &command, now)?;
-        let sequence = self
-            .state
-            .sequence
-            .checked_add(1)
-            .filter(|s| *s <= MAX_SEQUENCE)
-            .ok_or(Error::Overflow)?;
+        let sequence = crate::domain::next_sequence(self.state.sequence).ok_or(Error::Overflow)?;
         let event = Event {
             timestamp: now.max(self.state.last_timestamp),
             client_key,
@@ -181,10 +301,15 @@ impl<J: Journal> Service<J> {
         }
         self.state.apply(&event);
         if let Some(key) = client_key {
-            self.keyed.push(KeyReceipt {
+            if self.keyed.len() == MAX_RECORDS {
+                self.keyed.pop_front();
+            }
+            self.keyed.push_back(KeyReceipt {
                 key,
                 actor,
-                index: self.records,
+                command: crate::domain::fingerprint(&event.command),
+                sequence: event.sequence,
+                timestamp: event.timestamp,
             });
         }
         if let Command::UpdateMember {
@@ -238,66 +363,4 @@ pub fn decode(frame: &[u8; FRAME_SIZE]) -> Result<Event, Error> {
 }
 
 #[cfg(feature = "desktop")]
-pub mod file {
-    use super::*;
-    use std::{
-        fs::{File, OpenOptions},
-        io::{Read, Seek, SeekFrom, Write},
-        path::Path,
-    };
-
-    pub struct FileJournal {
-        file: File,
-        records: usize,
-    }
-    impl FileJournal {
-        pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(path)?;
-            fs2::FileExt::try_lock_exclusive(&file)?;
-            let len = file.metadata()?.len();
-            if len > (MAX_RECORDS * FRAME_SIZE) as u64 {
-                return Err(std::io::Error::other("journal exceeds capacity"));
-            }
-            // A partial final frame was never acknowledged as durable. Complete
-            // frames with bad checksums fail closed; they are never discarded.
-            let valid_len = len / FRAME_SIZE as u64 * FRAME_SIZE as u64;
-            if valid_len != len {
-                file.set_len(valid_len)?;
-                file.sync_all()?;
-            }
-            Ok(Self {
-                file,
-                records: (valid_len / FRAME_SIZE as u64) as usize,
-            })
-        }
-    }
-    impl Journal for FileJournal {
-        fn read(&mut self, index: usize, frame: &mut [u8; FRAME_SIZE]) -> Result<bool, Error> {
-            if index >= self.records {
-                return Ok(false);
-            }
-            self.file
-                .seek(SeekFrom::Start((index * FRAME_SIZE) as u64))
-                .map_err(|_| Error::Storage)?;
-            self.file.read_exact(frame).map_err(|_| Error::Storage)?;
-            Ok(true)
-        }
-        fn append(&mut self, index: usize, frame: &[u8; FRAME_SIZE]) -> Result<(), Error> {
-            if index != self.records || index >= MAX_RECORDS {
-                return Err(Error::Storage);
-            }
-            self.file
-                .seek(SeekFrom::Start((index * FRAME_SIZE) as u64))
-                .map_err(|_| Error::Storage)?;
-            self.file.write_all(frame).map_err(|_| Error::Storage)?;
-            self.file.sync_all().map_err(|_| Error::Storage)?;
-            self.records += 1;
-            Ok(())
-        }
-    }
-}
+pub mod file;

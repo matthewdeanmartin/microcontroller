@@ -1,4 +1,4 @@
-"""Exercise the JSON-only server using the existing Angular client's contract."""
+"""Exercise the JSON API using the existing Angular client's contract."""
 import base64
 import hashlib
 import json
@@ -81,8 +81,9 @@ def main():
         process = start()
         try:
             try:
-                urllib.request.urlopen(base + '/', timeout=5)
-                raise AssertionError('Root must not serve a home page')
+                with urllib.request.urlopen(base + '/', timeout=5) as response:
+                    assert response.headers.get_content_type() == 'text/html'
+                    assert b'<app-root' in response.read()
             except urllib.error.HTTPError as error:
                 assert error.code == 404
                 assert json.loads(error.read())['error'] == 'not_found'
@@ -188,7 +189,7 @@ def main():
             assert request('/me', token=login('nana', '4321'))[1]['balance'] == 25
         finally:
             stop(process)
-    print('HTTP smoke passed: JSON-only, Angular auth/views/money/offers/forex/privacy, 1000 offer reads, CORS, revocation, restart, durable retries')
+    print('HTTP smoke passed: JSON API, Angular auth/views/money/offers/forex/privacy, 1000 offer reads, CORS, revocation, restart, durable retries')
 
 
 if __name__ == '__main__':

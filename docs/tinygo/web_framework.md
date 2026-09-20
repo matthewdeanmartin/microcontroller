@@ -1,5 +1,8 @@
 # The web framework
 
+For the parallel implementation, see [Rust HTTP and concurrency](../rust/architecture.md).
+Rust uses ESP-IDF's HTTP(S) transport, not this Go transport replacement.
+
 NanaCoin's framework is a small set of in-repository layers, built around
 ordinary Go HTTP handlers. The board replaces the expensive transport pieces
 while preserving shared application behavior.

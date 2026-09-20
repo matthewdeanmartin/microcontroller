@@ -1,5 +1,15 @@
 # nanacoin_web
 
+## Public static showcase
+
+The existing GitHub Pages demo is built from the same client at
+`../nanacoin/angular` using its `demo` configuration. This folder is the legacy
+MicroPython static-file host, not a separate frontend implementation. See
+[showcase build and capability parity](../nanacoin/angular/SHOWCASE_PARITY.md).
+About, lemon-bar recipes and notebook styling are shared. The static demo uses
+fictional financial data and real browser health; it never needs a live board.
+Nana-nickles are currently a labelled browser prototype, not a Rust/TinyGo API.
+
 The NanaCoin site, served off an ESP32-S2 Mini.
 
 Two boards, one household currency:
@@ -7,8 +17,8 @@ Two boards, one household currency:
 ```text
    ESP32-S2 Mini                    ESP32-S3-N16R8
    4MB flash, 2MB PSRAM             16MB flash, 8MB PSRAM
-   MicroPython                      TinyGo
-   http://nanacoin.local/           http://192.168.1.158/api/v1
+   MicroPython                      Rust (or TinyGo)
+   http://nanacoin.local/           https://nanacoin-rs.local/api/v1
    serves the Angular bundle        the ledger, the API, the money
           \                                    /
            \                                  /
@@ -73,25 +83,51 @@ The client remembers it in `localStorage`, so it is a one-time step per
 browser. Without the parameter the site asks for the address on a connect
 screen, which is the same thing with more typing.
 
-Both boards now have distinct mDNS names: this MicroPython web board is
-`nanacoin.local`, and the TinyGo S3 API is `nanacoin-api.local`. Open
-`http://nanacoin.local/?api=nanacoin-api.local` to connect them without a fixed
-IP address. The printed DHCP addresses remain a fallback if mDNS is blocked.
+The web board is `nanacoin.local`; Rust uses `https://nanacoin-rs.local` and
+TinyGo uses `http://nanacoin-api.local`. After an unreachable or non-API
+startup response, Angular searches both HTTP and HTTPS at these API names,
+the saved/deployment addresses, and the documented board addresses
+`192.168.1.158` and `192.168.1.157`. The connect screen also has a search
+button with progress and cancellation. It probes sequentially with a
+three-second timeout, validates NanaCoin's public status shape, and saves
+only a successful candidate. No bearer token is sent during discovery.
+This is a fixed candidate list, not a subnet scan; DHCP can still require
+entering a new address manually.
 
-## Why HTTP, and why that is not negotiable here
+## HTTP site, HTTP or HTTPS API
 
-Both boards serve plain HTTP on the LAN, which is what lets them work
-together.
+The MicroPython web board serves HTTP. It can call either TinyGo's HTTP API
+or Rust's HTTPS API, subject to certificate trust, CORS and browser local
+network permission. Rust's development certificate must be trusted and
+match the requested hostname/IP; a certificate for `nanacoin-rs.local`
+does not automatically validate a numeric IP. Discovery cannot bypass TLS
+validation.
 
 A page served over HTTPS may not call a plain-HTTP address: browsers block it
 as mixed content before the request is made, and no CORS header can permit it.
-That is why the site is **not** on GitHub Pages - a page served from
+That is why the **live-board build** is not the GitHub Pages demo - a page served from
 `https://you.github.io` could never reach `http://192.168.1.158`. The
 `http://localhost` exemption does not extend to private LAN addresses.
+The separate `demo` build uses an in-browser ledger and needs no LAN access.
 
-Giving the S3 a real certificate would mean a domain, DNS-01 challenges and a
-TLS stack on a board whose RAM is already the constraint. Serving both halves
-over HTTP on the same LAN costs nothing and works today.
+Rust already includes TLS on the S3. Keep the web site's HTTP URL available
+when switching back to the TinyGo firmware.
+
+## Administrator machine health
+
+The Angular source is in `../nanacoin/angular`. Sign in as Nana and open
+**Machine health** (`#/diagnostics`) to see the Rust API board's internal
+RAM/fragmentation, PSRAM, temperature, Wi-Fi, clock, task/stack headroom,
+server counters, NVS storage and flash partition map. The displayed board
+is the API S3, not the web-serving S2. Charts keep at most 120 samples in the
+browser. Hidden tabs stop polling, requests do not overlap, and leaving the
+page cancels pending requests. Old Rust firmware can show basic heap
+counters; unsupported firmware reports its limitations.
+
+Building with `npm run build` in `nanacoin/angular` only produces local
+assets. Deploy scripts write to the web board; do not run them until a
+board update is intended. This diagnostics change does not require or
+perform a flash/deployment as part of local validation.
 
 ## How the server works
 

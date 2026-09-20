@@ -10,6 +10,7 @@ import { FormsModule } from '@angular/forms';
 
 import { ApiBase, normalise } from '../api/api-base';
 import { NanacoinService } from '../api/nanacoin.service';
+import { candidates, Discovery } from '../api/discovery';
 
 @Component({
   selector: 'app-connect-form',
@@ -47,6 +48,22 @@ import { NanacoinService } from '../api/nanacoin.service';
           {{ busy() ? 'Trying…' : 'Connect' }}
         </button>
       </form>
+
+      <p>
+        <button class="btn btn--quiet" type="button" (click)="search()" [disabled]="busy()">
+          Search for NanaCoin (HTTP and HTTPS)
+        </button>
+        @if (searching()) {
+          <button class="btn btn--quiet" type="button" (click)="cancelSearch()">Cancel search</button>
+        }
+      </p>
+      <p class="muted small" role="status">{{ searchMessage() }}</p>
+      <p class="muted small">
+        Searches nanacoin-rs.local, nanacoin-api.local, saved addresses, and
+        192.168.1.158 / 192.168.1.157. HTTPS needs a trusted certificate matching
+        the address. An HTTPS page may block HTTP boards; open the web board's
+        HTTP page to use TinyGo.
+      </p>
 
       @if (preview()) {
         <p class="muted small">Will try <code>{{ preview() }}</code></p>
@@ -117,6 +134,10 @@ import { NanacoinService } from '../api/nanacoin.service';
   `,
 })
 export class ConnectForm {
+  private readonly discovery = inject(Discovery);
+  private searchController: AbortController | null = null;
+  protected readonly searching = signal(false);
+  protected readonly searchMessage = signal('');
   private readonly apiBase = inject(ApiBase);
   private readonly api = inject(NanacoinService);
 
@@ -152,6 +173,38 @@ export class ConnectForm {
     const v = this.address.trim();
     return v ? normalise(v) : '';
   }
+
+  protected async search(): Promise<void> {
+    if (this.busy()) return;
+    const controller = new AbortController();
+    this.searchController = controller;
+    this.busy.set(true);
+    this.searching.set(true);
+    this.diagnosis.set('');
+    try {
+      const meta = document.querySelector('meta[name="nanacoin-api"]')?.getAttribute('content') ?? '';
+      const base = await this.discovery.find(candidates(this.apiBase.current(), meta),
+        controller.signal, (url) => this.searchMessage.set(`Trying ${url}…`));
+      if (controller.signal.aborted) return;
+      if (base) {
+        this.apiBase.set(base);
+        this.connected.emit();
+      } else {
+        this.searchMessage.set('No readable NanaCoin API found. Check power, Wi-Fi, certificate trust and browser network permissions, or enter its address above.');
+      }
+    } finally {
+      this.busy.set(false);
+      this.searching.set(false);
+      this.searchController = null;
+    }
+  }
+
+  protected cancelSearch(): void {
+    this.searchController?.abort();
+    this.searchMessage.set('Search cancelled.');
+  }
+
+  ngOnDestroy(): void { this.searchController?.abort(); }
 
   protected async connect(): Promise<void> {
     if (this.busy()) return;

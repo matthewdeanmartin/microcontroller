@@ -4,9 +4,9 @@
 // UI knows about money it learns from here; nothing here decides whether a
 // transaction is valid.
 
-import { HttpClient, HttpErrorResponse, HttpHeaders } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse, HttpHeaders, HttpInterceptorFn, HttpResponse } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
-import { Observable, catchError, firstValueFrom, throwError } from 'rxjs';
+import { Observable, catchError, firstValueFrom, throwError, timeout, TimeoutError, tap } from 'rxjs';
 
 import { Accounts } from './accounts';
 import { Log } from './log';
@@ -57,6 +57,33 @@ export class BusyError extends Error {
     this.name = 'BusyError';
   }
 }
+
+export interface StorageStatus {
+  generation: number; sequence: number; journal_records: number;
+  checkpoint_after: number; checkpoint_supported: boolean;
+}
+// A key captures its generation when created, not on each network retry.
+// Older Go servers omit the field and accept these keys as ordinary strings.
+let journalGeneration = 0;
+let journalSource = '';
+function rememberGeneration(source: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) return;
+  journalGeneration = journalSource === source ? Math.max(journalGeneration, value) : value;
+  journalSource = source;
+}
+
+export const journalGenerationInterceptor: HttpInterceptorFn = (request, next) => {
+  const base = inject(ApiBase);
+  const target = base.current();
+  const update = (response: HttpResponse<unknown> | HttpErrorResponse) => {
+    if (base.current() !== target || !request.url.startsWith(target + '/')) return;
+    const raw = response.headers.get('X-Nanacoin-Generation');
+    const value = Number(raw);
+    if (raw !== null) rememberGeneration(target, value);
+  };
+  return next(request).pipe(tap({ next: (event) => { if (event instanceof HttpResponse) update(event); },
+    error: (error) => { if (error instanceof HttpErrorResponse) update(error); } }));
+};
 
 /** Retry-After is seconds, or an HTTP date. Bounded so a bad value cannot hang. */
 function retryAfterMs(header: string | null): number {
@@ -124,7 +151,43 @@ export class NanacoinService {
   // --- auth ---
 
   status(): Promise<Status> {
-    return this.get<Status>('/status');
+    const target = this.base;
+    return this.traced('GET', '/status', () => firstValueFrom(
+      this.http.get<Status>(this.base + '/status').pipe(timeout(6000), this.mapError()),
+    )).then((status) => {
+      if (target === this.base) rememberGeneration(target, status.journal_generation ?? 0);
+      return status;
+    });
+  }
+
+  storage(): Promise<StorageStatus> { return this.get<StorageStatus>('/admin/storage'); }
+  async checkpoint(storage: StorageStatus): Promise<StorageStatus> {
+    const result = await this.post<StorageStatus>('/admin/checkpoint', {
+      expected_generation: storage.generation, expected_sequence: storage.sequence,
+    });
+    rememberGeneration(this.base, result.generation);
+    return result;
+  }
+  transport(): Promise<{ https_only: boolean; supported: boolean }> {
+    return this.get('/transport');
+  }
+  createNickle(amount: number, fresh_money: boolean): Promise<{ token: string; amount: number; serial: string }> {
+    return this.post('/nickles', { amount, fresh_money });
+  }
+  redeemNickle(token: string): Promise<Transaction> {
+    // The log redactor treats the exact key 'token' as secret.
+    return this.post('/nickles/redeem', { token });
+  }
+
+  async requireHttps(): Promise<void> {
+    await this.post('/admin/transport', { confirmation: 'REQUIRE HTTPS' });
+    this.accounts.clear();
+  }
+
+  async resetEconomy(storage: StorageStatus, confirmation: string): Promise<void> {
+    await this.post<StorageStatus>('/admin/reset', { expected_generation: storage.generation,
+      expected_sequence: storage.sequence, confirmation });
+    this.accounts.clear();
   }
 
   provision(
@@ -631,6 +694,9 @@ export class NanacoinService {
    */
   private mapError<T>() {
     return catchError<T, Observable<never>>((err: unknown) => {
+      if (err instanceof TimeoutError) {
+        return throwError(() => new ApiError(0, 'unreachable', 'NanaCoin did not answer within six seconds.'));
+      }
       if (!(err instanceof HttpErrorResponse)) {
         return throwError(() => new ApiError(0, 'unknown', 'Something went wrong.'));
       }
@@ -759,7 +825,7 @@ async function challengeFor(verifier: string): Promise<string> {
 export function newIdempotencyKey(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
-  return base64url(bytes);
+  return `g${journalGeneration}:${base64url(bytes)}`;
 }
 
 

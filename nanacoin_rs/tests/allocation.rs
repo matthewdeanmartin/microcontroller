@@ -25,6 +25,122 @@ unsafe impl GlobalAlloc for Counting {
 }
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
+
+#[cfg(feature = "bundled-web")]
+#[test]
+fn static_routes_borrow_assets_without_allocating() {
+    COUNT.with(|count| count.set(0));
+    ENABLED.with(|enabled| enabled.set(true));
+    for _ in 0..1000 {
+        let reply = nanacoin::web::respond("GET", "/market?test=1", "gzip", "").unwrap();
+        assert_eq!(reply.status, 200);
+        let etag = reply
+            .headers
+            .iter()
+            .find(|(key, _)| *key == "ETag")
+            .unwrap()
+            .1;
+        assert_eq!(
+            nanacoin::web::respond("GET", "/", "gzip", etag)
+                .unwrap()
+                .status,
+            304
+        );
+        assert_eq!(
+            nanacoin::web::respond("GET", "/missing.js", "", "")
+                .unwrap()
+                .status,
+            404
+        );
+    }
+    ENABLED.with(|enabled| enabled.set(false));
+    assert_eq!(COUNT.with(Cell::get), 0);
+}
+
+#[test]
+fn checkpoint_and_reset_reuse_preallocated_application_memory() {
+    struct Store {
+        frames: Vec<[u8; FRAME_SIZE]>,
+        generation: u64,
+    }
+    impl Journal for Store {
+        fn read(&mut self, n: usize, out: &mut [u8; FRAME_SIZE]) -> Result<bool, Error> {
+            if let Some(row) = self.frames.get(n) {
+                *out = *row;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+        fn append(&mut self, _: usize, row: &[u8; FRAME_SIZE]) -> Result<(), Error> {
+            self.frames.push(*row);
+            Ok(())
+        }
+        fn generation(&self) -> u64 {
+            self.generation
+        }
+        fn supports_checkpoint(&self) -> bool {
+            true
+        }
+        fn begin_checkpoint(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+        fn write_checkpoint(&mut self, _: usize, row: &[u8]) -> Result<(), Error> {
+            assert!(row.len() <= nanacoin::journal::checkpoint::ROW_BYTES);
+            Ok(())
+        }
+        fn commit_checkpoint(&mut self, _: usize) -> Result<(), Error> {
+            self.generation += 1;
+            self.frames.clear();
+            Ok(())
+        }
+    }
+    let mut s = Service::open(Store {
+        frames: Vec::with_capacity(128),
+        generation: 0,
+    })
+    .unwrap();
+    common::provision(&mut s);
+    for id in 2..100 {
+        s.execute(
+            MemberId(1),
+            id,
+            Command::Issue {
+                to: MemberId(1),
+                amount: 1,
+                memo: Memo::new(),
+            },
+        )
+        .unwrap();
+    }
+    COUNT.with(|c| c.set(0));
+    ENABLED.with(|e| e.set(true));
+    s.checkpoint(MemberId(1)).unwrap();
+    s.reset_economy(MemberId(1)).unwrap();
+    ENABLED.with(|e| e.set(false));
+    assert_eq!(COUNT.with(Cell::get), 0);
+    assert!(s.state().members.is_empty());
+}
+
+#[test]
+fn repeated_diagnostics_serialization_does_not_allocate() {
+    use nanacoin::diagnostics::{response, Snapshot, SystemInfo, RESPONSE_BYTES};
+    let snapshot = Snapshot {
+        schema: 1,
+        temperature_c: Some(43.75),
+        ..Snapshot::default()
+    };
+    let info = SystemInfo::default();
+    let mut output = [0; RESPONSE_BYTES];
+    COUNT.with(|c| c.set(0));
+    ENABLED.with(|e| e.set(true));
+    for _ in 0..1000 {
+        assert_eq!(response(&snapshot, &mut output).0, 200);
+        assert_eq!(response(&info, &mut output).0, 200);
+    }
+    ENABLED.with(|e| e.set(false));
+    assert_eq!(COUNT.with(Cell::get), 0);
+}
 struct Preallocated(Vec<[u8; FRAME_SIZE]>);
 impl Journal for Preallocated {
     fn read(&mut self, index: usize, frame: &mut [u8; FRAME_SIZE]) -> Result<bool, Error> {

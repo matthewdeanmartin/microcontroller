@@ -33,9 +33,12 @@ import {
   TransactionKind,
   User,
 } from '../api/models';
+import { sha256 } from '../api/sha256';
 
 /** The one account allowed to go negative; see ledger.SystemIssuance. */
 export const SYSTEM_ISSUANCE = 'account:system-issuance';
+export const NICKLE_RESERVE = 'account:nickle-reserve';
+const digestNickle = (token: string) => Array.from(sha256(new TextEncoder().encode(token)), b => b.toString(16).padStart(2, '0')).join('');
 
 export class DemoError extends Error {
   constructor(
@@ -59,6 +62,41 @@ export class DemoLedger {
   private transactions: Transaction[] = [];
   private nextTxn = 1;
   private nextId = 1;
+  private nickles = new Map<string, { amount: number; serial: string }>();
+  private nextNickle = 1;
+
+  createNickle(actor: DemoUser, amount: number, freshMoney = false): { token: string; amount: number; serial: string } {
+    this.requireActive(actor);
+    this.requireAmount(amount);
+    if (freshMoney) this.requireNana(actor);
+    if (this.nickles.size >= 128) throw new DemoError(409, 'capacity', 'Redeem outstanding vouchers before creating more.');
+    const token = 'DEMO-NN-' + Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, '0')).join('');
+    const digest = digestNickle(token);
+    if (this.nickles.has(digest)) throw new DemoError(409, 'collision', 'Please try again.');
+    const serial = `NN-${this.nextNickle}`;
+    this.append(freshMoney ? 'ISSUE' : 'TRANSFER', actor.id, `Create nana-nickle ${serial}`, [
+      { account: freshMoney ? SYSTEM_ISSUANCE : actor.account, name: '', amount: -amount },
+      { account: NICKLE_RESERVE, name: '', amount },
+    ], { reference: `nickle:${serial}` });
+    this.nickles.set(digest, { amount, serial });
+    this.nextNickle++;
+    return { token, amount, serial };
+  }
+
+  redeemNickle(actor: DemoUser, token: string): Transaction {
+    this.requireActive(actor);
+    if (!/^DEMO-NN-[a-f0-9]{64}$/.test(token)) throw new DemoError(400, 'invalid_voucher', 'Unknown or already redeemed voucher.');
+    const digest = digestNickle(token);
+    const voucher = this.nickles.get(digest);
+    if (!voucher) throw new DemoError(400, 'invalid_voucher', 'Unknown or already redeemed voucher.');
+    // Synchronous check/post/consume: no await between these operations.
+    const transaction = this.append('TRANSFER', actor.id, `Redeem nana-nickle ${voucher.serial}`, [
+      { account: NICKLE_RESERVE, name: '', amount: -voucher.amount },
+      { account: actor.account, name: '', amount: voucher.amount },
+    ], { reference: `nickle:${voucher.serial}` });
+    this.nickles.delete(digest);
+    return transaction;
+  }
 
   household = 'The Demo House';
   provisioned = false;
@@ -175,7 +213,7 @@ export class DemoLedger {
         name:
           p.account === SYSTEM_ISSUANCE
             ? 'Issuance'
-            : (this.userByAccount(p.account)?.display_name ?? p.account),
+            : p.account === NICKLE_RESERVE ? 'Nana-nickle reserve' : (this.userByAccount(p.account)?.display_name ?? p.account),
       })),
       reversed_by: this.transactions.find((r) => r.reverses === t.id)?.id,
     }));
@@ -312,6 +350,9 @@ export class DemoLedger {
   reverse(actor: DemoUser, id: string, reason: string): Transaction {
     this.requireNana(actor);
     const original = this.transactions.find((t) => t.id === id);
+    if (original?.reference?.startsWith('nickle:')) {
+      throw new DemoError(409, 'voucher_transaction', 'Bearer voucher transfers cannot be reversed independently of their voucher.');
+    }
     if (!original) throw new DemoError(404, 'not_found', 'No such transaction.');
     if (this.transactions.some((t) => t.reverses === id)) {
       throw new DemoError(409, 'already_reversed', 'That has already been reversed.');

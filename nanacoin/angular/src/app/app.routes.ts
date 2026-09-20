@@ -1,12 +1,17 @@
 import { Routes } from '@angular/router';
 
 import { nanaOnly } from './api/guards';
+import { IS_DEMO } from './demo/demo';
 
 /**
  * Routes are lazy so that Nana's admin screens - the largest part of the app
  * and the part most people never open - are not in the initial bundle.
  */
 export const routes: Routes = [
+  { path: 'about', loadComponent: () => import('./pages/about').then(m => m.AboutPage), title: 'About — NanaCoin' },
+  { path: 'recipes', loadComponent: () => import('./pages/recipes').then(m => m.RecipesPage), title: 'Lemon bars — NanaCoin' },
+  { path: 'ledger', loadComponent: () => import('./pages/public-ledger').then(m => m.PublicLedger), title: 'The notebook — NanaCoin' },
+  { path: 'nickles', loadComponent: () => import('./pages/nickles').then(m => m.NicklesPage), title: 'Nana-nickles — NanaCoin' },
   {
     path: 'market',
     loadComponent: () => import('./pages/market').then((m) => m.MarketPage),
@@ -56,6 +61,14 @@ export const routes: Routes = [
     // with buttons - disable a member, create a user, issue coin - that the
     // server would refuse. The guard makes the hidden tab mean something.
     canActivate: [nanaOnly],
+  },
+  {
+    path: 'diagnostics',
+    loadComponent: () => IS_DEMO
+      ? import('./pages/browser-health').then(m => m.BrowserHealth)
+      : import('./pages/diagnostics').then((m) => m.DiagnosticsPage),
+    title: IS_DEMO ? 'Browser health — NanaCoin' : 'Machine health — NanaCoin',
+    canActivate: IS_DEMO ? [] : [nanaOnly],
   },
   { path: '', pathMatch: 'full', redirectTo: 'market' },
   { path: '**', redirectTo: 'market' },

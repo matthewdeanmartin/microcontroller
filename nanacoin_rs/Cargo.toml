@@ -22,7 +22,8 @@ required-features = ["esp32"]
 [features]
 default = ["desktop"]
 desktop = ["dep:tiny_http", "dep:fs2"]
-esp32 = ["dep:esp-idf-svc", "dep:embuild", "dep:log"]
+esp32 = ["dep:esp-idf-svc", "dep:embuild", "dep:log", "bundled-web"]
+bundled-web = []
 
 [dependencies]
 heapless = { version = "0.8", features = ["serde"] }

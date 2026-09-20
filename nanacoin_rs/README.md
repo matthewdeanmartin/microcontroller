@@ -1,6 +1,11 @@
 # NanaCoin Rust
 
-A JSON-only household scrip API targeting ESP32-S3 N16R8. The client is the existing `nanacoin_web` / Angular application, running locally on port 4200. This project serves no HTML. The Rust domain uses typed commands, identity newtypes, checked integer amounts and explicit errors; a wire adapter supports the existing client's principal flows.
+A household scrip API and bundled Angular site targeting ESP32-S3 N16R8.
+Open **https://nanacoin.local/** for the single-board UI, with API at `/api/v1`.
+Firmware embeds the shared Angular production build as read-only flash assets.
+Separate client hosting and the API-only desktop build remain supported. Do not
+run the legacy `nanacoin.local` UI board at the same time. The Rust domain uses
+typed commands, identity newtypes, checked integer amounts and explicit errors.
 
 ## Run locally
 
@@ -36,6 +41,10 @@ The September 19 parity pass adds USD wallets, a bounded forex quote book, exter
 
 Settlement deadlines use server wall time, never browser time or uptime. Firmware starts SNTP after Wi-Fi; optionally set `NANACOIN_NTP_SERVER` at build time for a reachable LAN time server. Until the clock is valid, timed offer mutations return 503 and offers are not advertised as reversible. A clock behind the last durable event also blocks timed mutations. Deadlines and the configuration survive replay; changing the window applies only to future acceptances.
 
+For a code-linked introduction to Rust ownership, memory, HTTP, diagnostics and
+the exact NVS key layout, start with [the Rust guide](../docs/rust/index.md).
+[LITTLEFS_EPIC.md](LITTLEFS_EPIC.md) is a proposal only; storage remains NVS.
+
 ## Build and check
 
 ```bash
@@ -58,9 +67,53 @@ those are exported. Otherwise `build.rs` reads the first gitignored `.env` or
 `config.py` that defines `WIFI_SSID` / `WIFI_PASSWORD` (this crate first, then
 `nanacoin_web`, then the MicroPython projects), so `make firmware` works with no
 environment setup. The build prints which file it used, never the value, and the
-environment always wins. Wi-Fi credentials and ignored `certs/server.crt` / `certs/server.key` are embedded during compilation. There is no embedded household password or admin token. Treat binaries and build caches as secrets. The build does not flash, reset, probe or open serial connections. **This pass builds only; flashing waits until the owner connects the board.**
+environment always wins. Wi-Fi credentials and ignored `certs/nanacoin-ca-signed.crt` /
+`certs/nanacoin-ca-signed.key` are embedded during compilation. There is no embedded
+household password or admin token. Treat binaries and build caches as secrets.
+`make firmware` does not flash, reset, probe or open serial connections.
 
-The intended board API address is `https://nanacoin-rs.local/api/v1/status`. mDNS uses local multicast, rather than requiring a router-assigned name. Clients need mDNS support and multicast reachability. Trust the development certificate or supply a trusted LAN certificate matching this hostname. No plaintext HTTP fallback runs on the board. The client stays on its own host with its origin allowed by CORS. Certificate renewal is manual.
+The board serves `http://nanacoin.local/` and `https://nanacoin.local/` in Easy
+mode. mDNS needs multicast reachability. `/trust` guides certificate installation;
+`/ca` serves only the public household CA. Nana can require HTTPS for everyone
+after preparing all devices. Secure mode leaves HTTP available only for trust
+setup and CA download. The build needs `mkcert` and OpenSSL, preserves its dedicated
+CA, and never installs trust automatically. See [connection security](CONNECTION_SECURITY.md)
+for limitations, key handling and explicit USB recovery without economy reset.
+Both canonical origins are accepted even when other CORS origins are customized.
+
+## Single-board build and deployment
+
+```bash
+(cd ../nanacoin/angular && npm ci) # one-time dependencies, if needed
+make run-bundle                   # local UI + API on http://127.0.0.1:8080
+make web-check                    # Rust, HTTP assets and deployment safety tests
+make firmware                     # Angular + gzip manifest + ELF + checked .bin
+# Only when a board is attached and deployment is intended:
+make deploy PORT=COM9
+```
+
+Deployment rebuilds first, reads the board's partition table, and refuses any
+layout other than the current Rust layout. It writes **only** the application
+at `0x10000`, not the ledger, configuration, bootloader or partition table.
+There is no full-chip erase. This is an upgrade script, not a first-install or
+TinyGo migration tool. Deployment resets the board and ends sessions; durable
+household state remains. Back up valuable state before updates.
+`bash scripts/deploy.sh COM9 --dry-run` builds and prints the plan without
+opening a serial port. Scripts use esptool 4.x through
+`NANACOIN_ESPTOOL_PYTHON`, or the installed Windows ESP-IDF Python environment.
+
+Assets live under ignored `.embuild/web`, with identity and gzip versions.
+The packaged index selects same-origin `/api/v1`; standalone Angular source
+defaults remain unchanged. An explicitly remembered API choice still wins:
+use the connection screen or `?api=` to select this site again. Serving uses
+borrowed flash slices and 2 KiB writes, not runtime compression, a filesystem,
+or the ledger response buffer. Hashed JS/CSS use immutable caching; index
+revalidates and ETags permit 304 responses. Only known Angular routes fall back
+to index; missing assets remain 404. Static routes support GET; other methods,
+including HEAD, return 405. Range requests are not implemented.
+
+UI updates reflash the application, not the ledger. An offline size gate rejects
+images exceeding the unchanged 4 MiB application partition.
 
 ## Memory and persistence
 
@@ -74,9 +127,9 @@ Rust does not automatically prevent fragmentation. Application collections have 
 | Names / titles / descriptions and memos | 40 / 80 / 96 UTF-8 bytes |
 | Request body / reused response buffer | 1 KiB / 512 KiB |
 | Sessions / pending login codes | 64 / 16 |
-| Journal | 4,096 fixed 1,024-byte records |
-| Durable HTTP retry index | 4,096 entries allocated once; 192 KiB on 64-bit host |
-| HTTPS sockets / handler stack | 4 / 24 KiB |
+| Journal | 1,024-byte records; automatically checkpoint/retire at 2,048 changes; reads legacy logs up to 4,096 |
+| Durable HTTP retry index | 4,096 receipts allocated once; bounded ring, preserved in checkpoints |
+| HTTPS + HTTP sockets / handler stacks | 4 + 2 / 24 KiB each; one reusable response buffer per worker |
 | Startup stack | 64 KiB |
 | Movement amount | 1 through 1,000,000,000 whole coins |
 
@@ -86,11 +139,13 @@ Offer slots recycle the oldest closed or settled deal, never an open or still-re
 
 Wi-Fi/lwIP and the diagnostics sampler use core 0; HTTPS and domain work use core 1. Financial writes have one owner. The service mutex now covers only the domain call: each httpd worker owns a response buffer, so serializing a reply and writing it to the socket happens outside the lock. Four TLS sockets are served concurrently; requests beyond that queue rather than being refused, so slow clients still delay others.
 
-`GET /api/v1/diag` is unauthenticated, takes no lock, and is answered from the core 0 sampler's atomics, so it responds while a write is in flight. It reports uptime, internal free/largest/minimum heap, free PSRAM, the sample count and which core owns each role. mbedTLS content buffers are 4 KiB in / 2 KiB out: request bodies are capped at 1 KiB, and the previous 16 KiB input buffer could not be allocated four times inside the reserved internal RAM.
+`GET /api/v1/diag` is unauthenticated and reads a small, coherent snapshot published by the core 0 sampler. Its separate mutex covers only copying the snapshot, never the ledger, probes or socket I/O. Memory, temperature, network, clock, tasks/stack, server counters and NVS capacity feed Angular's Nana-only **Machine health** page. `/api/v1/diag/static` adds hardware/build/reset information and the partition map. Both routes use a 4 KiB request-local response buffer and bypass the ledger response buffer. The shared diagnostics object is capped at 288 bytes, with a 4 KiB sampler stack and a startup temperature-driver handle. History stays in the browser. See [API.md](API.md#diagnostics) for field semantics and differences from MicroPython.
+
+mbedTLS content buffers are 4 KiB in / 2 KiB out: request bodies are capped at 1 KiB, and the previous 16 KiB input buffer could not be allocated four times inside the reserved internal RAM.
 
 Validated events append durably before state changes. Failed or ambiguous writes latch the service unavailable until replay. Complete corrupt records fail startup; only an incomplete final desktop frame is truncated. NVS initialization errors do not authorize automatic erasure. The firmware's 8 MiB NVS partition and overall layout differ from Go.
 
-After 4,096 commands, writes refuse further changes and reads remain available. There is no compaction, export or automatic erase. Add backup/compaction before long-term use. Amounts and IDs stay within JavaScript's exact integer range; money never uses floating point.
+The file and NVS adapters automatically save a durable checkpoint and retire the active log before the next write after 2,048 changes. Nana can close the journal early or reset the entire economy from the Household page. Checkpoints preserve balances, credentials, outstanding deals, retry protection and recent history. Reset removes all household data, revokes sessions and returns to provisioning. Both use two generations and publish the replacement before reclaiming the old data. See [RETENTION.md](RETENTION.md) for recovery, backup files, memory bounds, client retry generations and upgrade compatibility. Archival history export is not implemented. Amounts and IDs stay within JavaScript's exact integer range; money never uses floating point.
 
 USD issuance is Nana-only. Quotes support BID/ASK, integer cents per coin, all-or-nothing takes, expiry and owner/Nana cancellation. A take validates both wallets and records both currency legs in one durable event. Balances and quote status replay together; there is no half-trade state. Ordinary disabled accounts cannot send or receive. Currency listings retain descriptive metadata but do not themselves move USD wallets.
 

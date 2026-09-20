@@ -1,4 +1,7 @@
 <h2>Household</h2>
+@if (session.isNana() && !isDemo) {
+  <app-connection-security />
+}
 
 <!--
   A second check behind the route guard, because this page is the one that
@@ -12,6 +15,23 @@
     This is Nana's screen. Ask Nana if you need a member added or coins issued.
   </p>
 } @else {
+
+@if (session.status()?.checkpoint_supported) {
+  <section class="panel">
+    <h3>Journal and economy</h3>
+    <p>Balances are saved in durable checkpoints. The journal closes automatically after 2,048 changes so the economy can keep running.</p>
+    @if (storage(); as s) {
+      <p class="muted">Generation {{ s.generation }} · {{ s.journal_records }} changes since the last checkpoint</p>
+    }
+    @if (storageError()) { <p class="warning">{{ storageError() }}</p> }
+    <div class="actions">
+      <button class="btn btn--quiet" (click)="loadStorage()" [disabled]="storageBusy()">Refresh storage</button>
+      <button class="btn" (click)="closeBooks()" [disabled]="storageBusy() || seeder.running()">Close journal now</button>
+      <button class="btn btn--quiet" (click)="resetEconomy()" [disabled]="storageBusy() || seeder.running()">Reset economy…</button>
+    </div>
+    <p class="muted small">Closing preserves current state and recent history. Reset removes the whole household and returns to setup. Neither action is an archival backup.</p>
+  </section>
+}
 
 @if (session.status() && !session.status()!.ledger_balanced) {
   <p class="warning">
@@ -204,9 +224,9 @@
 } @else if (ledger().length === 0) {
   <p class="muted">Nothing yet.</p>
 } @else {
-  <div class="ledger">
+  <app-notebook><div class="ledger">
     @for (t of ledger(); track t.id) {
-      <div class="ledger-row">
+      <div class="ledger-row" data-keyboard-row tabindex="-1">
         <div class="ledger-row__head">
           <span class="ledger-row__kind">{{ kindLabel(t.kind) }}</span>
           <span class="ledger-row__desc">{{ t.description }}</span>
@@ -239,7 +259,7 @@
         }
       </div>
     }
-  </div>
+  </div></app-notebook>
 }
 
 }

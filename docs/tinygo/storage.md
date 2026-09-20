@@ -1,5 +1,9 @@
 # Storage, commit processing and retries
 
+The Rust board has a different, persistent adapter. See
+[NVS keys, recovery and retirement](../rust/storage.md) for its actual namespace
+and numbered-key layout, checkpoint publication and durable retry receipts.
+
 Three different records can exist around one request: a transaction describing
 money, a journal event describing a state change, and a retry receipt describing
 the response already given to a client. They serve different purposes.

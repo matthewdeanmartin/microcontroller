@@ -5,9 +5,12 @@
 
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { ConnectionSecurity } from './connection-security';
+import { Notebook } from '../ui/notebook';
+import { IS_DEMO } from '../demo/demo';
 
 import { Transaction } from '../api/models';
-import { NanacoinService, newIdempotencyKey } from '../api/nanacoin.service';
+import { NanacoinService, newIdempotencyKey, StorageStatus } from '../api/nanacoin.service';
 import { Session } from '../api/session';
 import { Dialogs } from '../ui/dialog';
 import { LiveSeeder, defaultSeed } from '../demo/seed-live';
@@ -15,10 +18,11 @@ import { Toasts } from '../ui/toasts';
 
 @Component({
   selector: 'app-nana',
-  imports: [FormsModule],
+  imports: [FormsModule, ConnectionSecurity, Notebook],
   templateUrl: './nana.html',
 })
 export class NanaPage {
+  protected readonly isDemo = IS_DEMO;
   private readonly api = inject(NanacoinService);
   private readonly toasts = inject(Toasts);
   private readonly dialogs = inject(Dialogs);
@@ -27,6 +31,9 @@ export class NanaPage {
 
   protected readonly ledger = signal<Transaction[]>([]);
   protected readonly loadingLedger = signal(false);
+  protected readonly storage = signal<StorageStatus | null>(null);
+  protected readonly storageBusy = signal(false);
+  protected readonly storageError = signal('');
 
   // Add a member.
   protected newUsername = '';
@@ -54,6 +61,48 @@ export class NanaPage {
 
   constructor() {
     void this.loadLedger();
+    if (this.session.status()?.checkpoint_supported) void this.loadStorage();
+  }
+
+  protected async loadStorage(): Promise<void> {
+    try { this.storage.set(await this.api.storage()); this.storageError.set(''); }
+    catch (e) { this.storageError.set(e instanceof Error ? e.message : String(e)); }
+  }
+
+  protected async closeBooks(): Promise<void> {
+    if (this.storageBusy() || this.seeder.running()) return;
+    this.storageBusy.set(true);
+    try {
+      const current = await this.api.storage();
+      const answer = await this.dialogs.confirm({ title: 'Close the current journal?',
+        message: 'Save a durable checkpoint and reclaim the older journal records.',
+        detail: ['Balances, accounts, open deals and recent displayed history are preserved.',
+          'Older detailed journal records are retired; this is not an archival backup.'],
+        confirmLabel: 'Close journal' });
+      if (answer === null) return;
+      this.storage.set(await this.api.checkpoint(current));
+      await this.session.refresh();
+      this.toasts.ok('Checkpoint saved. Journal space reclaimed.');
+    } catch (e) { this.toasts.fromError(e); }
+    finally { this.storageBusy.set(false); }
+  }
+
+  protected async resetEconomy(): Promise<void> {
+    if (this.storageBusy() || this.seeder.running()) return;
+    this.storageBusy.set(true);
+    try {
+      const current = await this.api.storage();
+      const answer = await this.dialogs.prompt({ title: 'Reset the entire economy?',
+        message: 'This removes every account, both currencies’ balances, listings, offers and history, including Nana’s account.',
+        detail: ['Everyone will be signed out. The app returns to first-time household setup.',
+          'This cannot be undone through the app. Type RESET ECONOMY to confirm.'],
+        placeholder: 'RESET ECONOMY', required: true, danger: true, confirmLabel: 'Reset economy' });
+      if (answer === null) return;
+      if (answer !== 'RESET ECONOMY') { this.toasts.error('Confirmation must be exactly RESET ECONOMY.'); return; }
+      await this.api.resetEconomy(current, answer);
+      window.location.reload();
+    } catch (e) { this.toasts.fromError(e); }
+    finally { this.storageBusy.set(false); }
   }
 
   protected async loadLedger(): Promise<void> {
@@ -229,6 +278,7 @@ export class NanaPage {
 
   /** A reversal cannot itself be reversed, and issuance is corrected by retiring. */
   protected reversible(t: Transaction): boolean {
+    if (t.reference?.startsWith('nickle:')) return false;
     return !t.reversed_by && t.kind !== 'REVERSAL' && t.kind !== 'ISSUE';
   }
 

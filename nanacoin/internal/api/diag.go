@@ -21,6 +21,8 @@ import (
 // is a health header on a response that was never sent. This endpoint closes
 // it by reporting what the *previous* run recorded before it stopped.
 type Diagnostics struct {
+	// Machine is optional: old hosts retain their original diagnostic shape.
+	Machine MachineDiagnostics
 	// LastBoot describes how the previous run ended, in one sentence.
 	LastBoot string `json:"last_boot"`
 
@@ -88,6 +90,53 @@ type Diagnostics struct {
 	GCDelta uint32 `json:"gc_delta"`
 }
 
+// MachineDiagnostics contains only bounded scalar values. Unsupported hardware
+// metrics are emitted as null, not fabricated zero measurements.
+type MachineDiagnostics struct {
+	Enabled     bool
+	SampledAtMS uint64
+	Total, Free uint64
+	Count       uint32
+}
+
+type MachineInfo struct {
+	Platform, Firmware string
+	Cores              uint8
+	SharedBytes        uintptr
+}
+
+func (s *Server) SetMachineInfo(fn func() MachineInfo) { s.machineInfo = fn }
+
+func (s *Server) handleDiagStatic(w http.ResponseWriter, r *http.Request) {
+	if s.machineInfo == nil {
+		http.NotFound(w, r)
+		return
+	}
+	d := s.machineInfo()
+	w.Header().Set("Cache-Control", "no-store")
+	encodeJSON(w, http.StatusOK, func(j *jsonw) {
+		j.objOpen()
+		j.fStr("platform", d.Platform)
+		j.fStr("firmware", d.Firmware)
+		j.fStr("idf", "Not used (TinyGo runtime)")
+		j.fInt("cores", int(d.Cores))
+		j.fInt("active_cores", 1)
+		for _, name := range [...]string{"chip_model", "chip_revision", "cpu_mhz", "reset_reason", "flash_bytes"} {
+			j.key(name)
+			j.null()
+		}
+		j.fUint64("snapshot_bytes", uint64(d.SharedBytes))
+		j.fInt("response_bytes", 192)
+		j.fStr("response_mode", "streamed; response_bytes is encoder scratch only")
+		j.key("partitions")
+		j.arrOpen()
+		j.arrClose()
+		j.fBool("partitions_truncated", false)
+		j.fBool("partitions_available", false)
+		j.objClose()
+	})
+}
+
 // DiagnosticsFunc reports host diagnostics. Registered by the host; a nil one
 // means the endpoint reports only what the API layer itself knows.
 type DiagnosticsFunc func() Diagnostics
@@ -105,6 +154,7 @@ func (s *Server) SetDiagnostics(fn DiagnosticsFunc) {
 // no balances, no usernames and no tokens - a phase, a route class, and some
 // counters.
 func (s *Server) handleDiag(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	var d Diagnostics
 	if s.diag != nil {
 		d = s.diag()

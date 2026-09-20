@@ -148,7 +148,7 @@ pub(super) fn route<J: Journal>(
         let receipt = s.execute_keyed(actor, key, command)?;
         // Reconstruct the original operation's phase, even after an undo. Never
         // pretend a retry accepted an offer again or extend its original deadline.
-        let timestamp = s.event(receipt.sequence)?.timestamp;
+        let timestamp = s.event_timestamp(receipt.sequence)?;
         let mut offer = s.state.offer(offer_id)?.clone();
         let settlement = offer.settlement().ok_or(Error::StaleRequest)?;
         offer.phase = if action == "accept" {

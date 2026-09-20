@@ -5,7 +5,7 @@
 } @else {
   <div class="cards">
     @for (l of session.forSale(); track l.id) {
-      <article class="card">
+      <article class="card" data-keyboard-row tabindex="-1">
         <h3>{{ l.title }}</h3>
 
         @if (l.description) {
@@ -106,7 +106,7 @@
     <summary>Sold and cancelled ({{ session.closed().length }})</summary>
     <div class="cards">
       @for (l of session.closed(); track l.id) {
-        <article class="card card--closed">
+        <article class="card card--closed" data-keyboard-row tabindex="-1">
           <h3>{{ l.title }}</h3>
           <p class="card__meta">
             <strong>{{ l.price }} coins</strong> · {{ l.seller_name }}

@@ -349,6 +349,7 @@ func boardDiagnostics() api.Diagnostics {
 	oldest, newest, n := heapTrend()
 
 	d := api.Diagnostics{
+		Machine:       machineDiagnostics(),
 		LastBoot:      lastBootLine(),
 		Crashed:       lastBootValid,
 		AllocFailures: failures,

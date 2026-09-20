@@ -55,7 +55,8 @@ type Server struct {
 
 	// diag reports the host's crash record and health. Optional; nil on the
 	// desktop, which has a console and a supervisor and needs neither.
-	diag DiagnosticsFunc
+	diag        DiagnosticsFunc
+	machineInfo func() MachineInfo
 
 	// allowProvision permits the unauthenticated bootstrap endpoint.
 	//

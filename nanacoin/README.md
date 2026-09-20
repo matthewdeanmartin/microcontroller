@@ -1,5 +1,10 @@
 # NanaCoin
 
+**TinyGo firmware is frozen** pending supported upstream board/PSRAM support;
+see [PSRAM_EPIC.md](PSRAM_EPIC.md). Machine-diagnostics compatibility is the
+explicit exception. The shared Angular client remains active for the Rust API.
+The [Rust guide](../docs/rust/index.md) explains the active implementation.
+
 A household currency and marketplace, administered by a trusted household
 authority called Nana. Runs on a laptop and on an ESP32-S3.
 

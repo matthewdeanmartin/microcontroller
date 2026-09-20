@@ -8,13 +8,13 @@ pub enum QuoteSide {
     BID,
     ASK,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QuoteStatus {
     Open,
     Filled,
     Cancelled,
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Quote {
     pub id: u64,
     pub maker: MemberId,

@@ -2,6 +2,7 @@
 
 import { Component, computed, inject, resource, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
+import { Notebook } from '../ui/notebook';
 
 import { Transaction } from '../api/models';
 import { NanacoinService, newIdempotencyKey } from '../api/nanacoin.service';
@@ -37,7 +38,7 @@ interface Row {
 
 @Component({
   selector: 'app-history',
-  imports: [RouterLink],
+  imports: [RouterLink, Notebook],
   template: `
     <h2>Your history</h2>
 
@@ -48,9 +49,9 @@ interface Row {
     } @else if (rows().length === 0) {
       <p class="muted">No transactions yet.</p>
     } @else {
-      <div class="history">
+      <app-notebook><div class="history">
         @for (r of rows(); track r.txn.id) {
-          <div class="txn" [class.txn--in]="r.delta >= 0" [class.txn--out]="r.delta < 0">
+          <div class="txn" data-keyboard-row tabindex="-1" [class.txn--in]="r.delta >= 0" [class.txn--out]="r.delta < 0">
             <div class="txn__main">
               <span class="txn__desc">{{ r.txn.description || r.label }}</span>
               @if (r.other) {
@@ -88,7 +89,7 @@ interface Row {
                 button at all: the correction exists, and a second one would
                 undo the undo.
               -->
-              @if (session.isNana() && !r.txn.reversed_by && r.txn.kind !== 'REVERSAL') {
+              @if (session.isNana() && !r.txn.reversed_by && r.txn.kind !== 'REVERSAL' && !r.txn.reference?.startsWith('nickle:')) {
                 <button
                   class="btn btn--quiet btn--small"
                   type="button"
@@ -99,7 +100,7 @@ interface Row {
             </div>
           </div>
         }
-      </div>
+      </div></app-notebook>
     }
   `,
 })

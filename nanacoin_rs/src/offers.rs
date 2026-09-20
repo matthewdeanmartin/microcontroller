@@ -11,7 +11,7 @@ pub type OfferMessage = heapless::String<140>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfferId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settlement {
     pub transaction: u64,
     pub payer: MemberId,
@@ -19,7 +19,7 @@ pub struct Settlement {
     pub settles_at: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OfferPhase {
     Open,
     Accepted(Settlement),
@@ -28,7 +28,7 @@ pub enum OfferPhase {
     Reversed(Settlement),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Offer {
     pub id: OfferId,
     pub listing: u64,

@@ -58,6 +58,13 @@ def test_existing_file_is_served():
     assert path.endswith("styles-YLJGJUOI.css")
     assert ctype.startswith("text/css")
 
+def test_self_hosted_cursive_font(site):
+    (site / "hand.ttf").write_bytes(b"font fixture")
+    path, gz, ctype = static.resolve("/hand.ttf", False)
+    assert path.endswith("hand.ttf")
+    assert not gz
+    assert ctype == "font/ttf"
+
 
 def test_gzip_is_preferred_when_accepted():
     path, gz, ctype = static.resolve("/main-ETPGPPCZ.js", True)

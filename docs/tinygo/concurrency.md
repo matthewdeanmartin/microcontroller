@@ -1,5 +1,8 @@
 # Concurrency and CPU cores
 
+Compare [Rust's service and snapshot locks](../rust/architecture.md): its
+ESP-IDF configuration uses both cores, while this TinyGo target uses one.
+
 Concurrent users, concurrent requests and parallel CPU execution are different
 things. A household can have many logged-in users without all of them issuing
 a request at once. One browser can also issue several simultaneous requests

@@ -1,5 +1,9 @@
 # Memory: capacity is part of the design
 
+For the implemented Rust counterpart, including its PSRAM allocator settings
+and the distinction between inline capacity and heap reservation, see
+[Rust memory and ownership](../rust/memory.md).
+
 An ordinary server can often tolerate creating a request object, building a
 response, growing a slice and letting the collector clean up afterward. On
 this board, a burst of those temporary objects competes with WiFi buffers,

@@ -32,6 +32,7 @@ func (s *Server) Handler() http.Handler {
 	}
 	if DiagEnabled {
 		mux.HandleFunc(v1+"/diag", s.only("GET", s.handleDiag))
+		mux.HandleFunc(v1+"/diag/static", s.only("GET", s.handleDiagStatic))
 	}
 	mux.HandleFunc(v1+"/provision", s.only("POST", s.handleProvision))
 
@@ -241,7 +242,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		// error message cannot distinguish.
 		//
 		// The log endpoint is skipped, or reading the log would fill it.
-		if strings.HasSuffix(r.URL.Path, "/logs") || strings.HasSuffix(r.URL.Path, "/diag") {
+		if strings.HasSuffix(r.URL.Path, "/logs") || strings.HasSuffix(r.URL.Path, "/diag") || strings.HasSuffix(r.URL.Path, "/diag/static") {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -12,93 +12,19 @@ use esp_idf_svc::{
     },
     io::{Read, Write},
     mdns::EspMdns,
-    nvs::{EspDefaultNvsPartition, EspNvs, EspNvsPartition, NvsCustom},
+    nvs::{EspDefaultNvsPartition, EspNvsPartition, NvsCustom},
     tls::X509,
     wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
-use nanacoin::{
-    api,
-    domain::Error,
-    journal::{Journal, Service, FRAME_SIZE},
-};
+use nanacoin::{api, domain::Error, journal::Service};
 use std::{
-    sync::{
-        atomic::{AtomicU32, Ordering},
-        Arc, Mutex,
-    },
+    sync::{atomic::Ordering, Arc, Mutex},
     time::Duration,
 };
 
-/// Heap and uptime samples, published by the core 0 sampler and read by the
-/// `/api/v1/diag` handler.
-///
-/// Diagnostics deliberately share nothing with the ledger. A request for
-/// `/api/v1/diag` must be answerable while a write holds the service mutex —
-/// that is the whole point of sampling on the other core — so the numbers
-/// travel through plain atomics rather than anything that can block. Each
-/// field is written by one task and read by another, so `Relaxed` is enough:
-/// there is no invariant spanning two fields to tear.
-#[derive(Default)]
-struct Diagnostics {
-    free: AtomicU32,
-    largest: AtomicU32,
-    minimum: AtomicU32,
-    psram_free: AtomicU32,
-    uptime: AtomicU32,
-    samples: AtomicU32,
-}
-
-impl Diagnostics {
-    fn sample(&self) {
-        let internal = esp_idf_svc::sys::MALLOC_CAP_INTERNAL | esp_idf_svc::sys::MALLOC_CAP_8BIT;
-        let spiram = esp_idf_svc::sys::MALLOC_CAP_SPIRAM;
-        // SAFETY: ESP-IDF heap and timer queries take no pointer arguments.
-        unsafe {
-            self.free.store(
-                esp_idf_svc::sys::heap_caps_get_free_size(internal) as u32,
-                Ordering::Relaxed,
-            );
-            self.largest.store(
-                esp_idf_svc::sys::heap_caps_get_largest_free_block(internal) as u32,
-                Ordering::Relaxed,
-            );
-            self.minimum.store(
-                esp_idf_svc::sys::heap_caps_get_minimum_free_size(internal) as u32,
-                Ordering::Relaxed,
-            );
-            self.psram_free.store(
-                esp_idf_svc::sys::heap_caps_get_free_size(spiram) as u32,
-                Ordering::Relaxed,
-            );
-            self.uptime.store(
-                (esp_idf_svc::sys::esp_timer_get_time() / 1_000_000) as u32,
-                Ordering::Relaxed,
-            );
-        }
-        self.samples.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Serialises without allocating and without touching the ledger.
-    fn write_json(&self, out: &mut [u8]) -> usize {
-        use std::io::Write as _;
-        let mut cursor = std::io::Cursor::new(out);
-        let _ = write!(
-            cursor,
-            concat!(
-                r#"{{"uptime_seconds":{},"free_heap":{},"largest_free_block":{},"#,
-                r#""minimum_free_heap":{},"psram_free":{},"samples":{},"#,
-                r#""sampler_core":0,"http_core":1}}"#
-            ),
-            self.uptime.load(Ordering::Relaxed),
-            self.free.load(Ordering::Relaxed),
-            self.largest.load(Ordering::Relaxed),
-            self.minimum.load(Ordering::Relaxed),
-            self.psram_free.load(Ordering::Relaxed),
-            self.samples.load(Ordering::Relaxed),
-        );
-        cursor.position() as usize
-    }
-}
+#[path = "esp32/diagnostics.rs"]
+mod diagnostics;
+use diagnostics::Diagnostics;
 
 // Per-worker response storage.
 //
@@ -115,31 +41,9 @@ thread_local! {
         std::cell::RefCell::new(vec![0u8; api::RESPONSE_LIMIT].into_boxed_slice());
 }
 
-struct NvsJournal(EspNvs<NvsCustom>);
-
-impl Journal for NvsJournal {
-    fn read(&mut self, index: usize, frame: &mut [u8; FRAME_SIZE]) -> Result<bool, Error> {
-        let mut key = heapless::String::<8>::new();
-        core::fmt::Write::write_fmt(&mut key, format_args!("e{index:04x}"))
-            .map_err(|_| Error::Capacity)?;
-        match self.0.get_blob(&key, frame).map_err(|_| Error::Storage)? {
-            Some(data) if data.len() == FRAME_SIZE => Ok(true),
-            Some(_) => Err(Error::CorruptJournal),
-            None => Ok(false),
-        }
-    }
-    fn append(&mut self, index: usize, frame: &[u8; FRAME_SIZE]) -> Result<(), Error> {
-        // EspNvs::set_blob performs nvs_set_blob AND nvs_commit. The record is
-        // the commit marker; no separately updated head can get out of sync.
-        let mut key = heapless::String::<8>::new();
-        core::fmt::Write::write_fmt(&mut key, format_args!("e{index:04x}"))
-            .map_err(|_| Error::Capacity)?;
-        if self.0.blob_len(&key).map_err(|_| Error::Storage)?.is_some() {
-            return Err(Error::Storage);
-        }
-        self.0.set_blob(&key, frame).map_err(|_| Error::Storage)
-    }
-}
+#[path = "esp32/journal.rs"]
+mod nvs_journal;
+use nvs_journal::NvsJournal;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     esp_idf_svc::sys::link_patches();
@@ -157,13 +61,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         esp_idf_svc::sys::nvs_flash_init_partition(c"ledger".as_ptr())
     })?;
     let partition = EspNvsPartition::<NvsCustom>::take("ledger")?;
-    let journal = NvsJournal(EspNvs::new(partition, "nanacoin", true)?);
+    let mut journal = NvsJournal::open(partition).map_err(|e| format!("journal storage: {e:?}"))?;
+    if option_env!("NANACOIN_RECOVER_HTTP") == Some("1") {
+        use nanacoin::journal::Journal;
+        journal
+            .set_https_only(false)
+            .map_err(|e| format!("transport recovery: {e:?}"))?;
+        log::warn!("USB recovery build: HTTP enabled; reinstall normal firmware next");
+    }
     let service = Service::open(journal).map_err(|e| format!("ledger startup: {e:?}"))?;
     // Response storage is per worker (see RESPONSE); the mutex guards only
     // the ledger service, so it is held for the domain call and nothing else.
     let shared = Arc::new(Mutex::new(service));
     let diagnostics = Arc::new(Diagnostics::default());
-    diagnostics.sample();
     let mut wifi = BlockingWifi::wrap(
         EspWifi::new(peripherals.modem, event_loop.clone(), Some(system_nvs))?,
         event_loop,
@@ -197,113 +107,198 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stack_size: 24 * 1024,
         max_open_sockets: 4,
         max_sessions: 4,
-        max_uri_handlers: 4,
+        max_uri_handlers: 5,
         uri_match_wildcard: true,
         session_timeout: Duration::from_secs(10),
         server_certificate: Some(X509::pem_until_nul(
-            concat!(include_str!("../../certs/server.crt"), "\0").as_bytes(),
+            concat!(include_str!("../../certs/nanacoin-ca-signed.crt"), "\0").as_bytes(),
         )),
         private_key: Some(X509::pem_until_nul(
-            concat!(include_str!("../../certs/server.key"), "\0").as_bytes(),
+            concat!(include_str!("../../certs/nanacoin-ca-signed.key"), "\0").as_bytes(),
         )),
         ..Default::default()
     };
     let mut server = EspHttpServer::new(&config)?;
-    for (method, method_name) in [
-        (Method::Get, "GET"),
-        (Method::Post, "POST"),
-        (Method::Patch, "PATCH"),
-        (Method::Options, "OPTIONS"),
-    ] {
-        let shared = Arc::clone(&shared);
-        let diagnostics = Arc::clone(&diagnostics);
-        server.fn_handler::<esp_idf_svc::io::EspIOError, _>("/*", method, move |mut req| {
-            let origin = heapless::String::<256>::try_from(req.header("Origin").unwrap_or(""));
-            let allowed = origin.as_ref().is_ok_and(|o| {
-                api::origin_allowed(
-                    o,
-                    option_env!("NANACOIN_ORIGINS").unwrap_or(api::DEFAULT_ORIGINS),
-                )
-            });
-            let origin = origin.unwrap_or_default();
-            let mut headers = heapless::Vec::<(&str, &str), 8>::new();
-            for pair in [
-                ("Content-Type", "application/json"),
-                ("Cache-Control", "no-store"),
-                ("Connection", "close"),
-                ("Vary", "Origin"),
-            ] {
-                headers.push(pair).unwrap();
-            }
-            if allowed && !origin.is_empty() {
-                headers
-                    .push(("Access-Control-Allow-Origin", origin.as_str()))
-                    .unwrap();
-                headers
-                    .push(("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS"))
-                    .unwrap();
-                headers
-                    .push((
-                        "Access-Control-Allow-Headers",
-                        "Authorization, Content-Type, Idempotency-Key",
-                    ))
-                    .unwrap();
-            }
-            RESPONSE.with(|cell| {
-                let mut borrowed = cell.borrow_mut();
-                let output = &mut **borrowed;
-                let (status, len) = if !allowed {
-                    api::error_response(Error::Forbidden, output)
-                } else if method_name == "OPTIONS" {
-                    output[..2].copy_from_slice(b"{}");
-                    (200, 2)
-                } else if method_name == "GET"
-                    && req.uri().split('?').next() == Some("/api/v1/diag")
-                {
-                    // Answered from the core 0 sampler's atomics. Never takes the
-                    // service mutex, so it still responds while a write holds it.
-                    (200, diagnostics.write_json(output))
+    let mut http_server = EspHttpServer::new(&HttpConfiguration {
+        http_port: 80,
+        ctrl_port: 32769,
+        core: Some(Core::Core1),
+        stack_size: 24 * 1024,
+        max_open_sockets: 2,
+        max_sessions: 2,
+        max_uri_handlers: 5,
+        uri_match_wildcard: true,
+        session_timeout: Duration::from_secs(5),
+        ..Default::default()
+    })?;
+    for (server, tls) in [(&mut server, true), (&mut http_server, false)] {
+        for (method, method_name) in [
+            (Method::Get, "GET"),
+            (Method::Head, "HEAD"),
+            (Method::Post, "POST"),
+            (Method::Patch, "PATCH"),
+            (Method::Options, "OPTIONS"),
+        ] {
+            let shared = Arc::clone(&shared);
+            let diagnostics = Arc::clone(&diagnostics);
+            server.fn_handler::<esp_idf_svc::io::EspIOError, _>("/*", method, move |mut req| {
+                let locked_http = !tls && shared.lock().unwrap().https_only();
+                let static_reply = if locked_http {
+                    nanacoin::web::onboarding(method_name, req.uri(), true)
                 } else {
-                    let length = if method_name == "POST" || method_name == "PATCH" {
-                        req.header("Content-Length")
-                            .and_then(|v| v.parse::<u64>().ok())
-                            .unwrap_or(u64::MAX)
-                    } else {
-                        0
-                    };
-                    if length > api::BODY_LIMIT as u64 {
-                        let (_, len) = api::error_response(Error::Capacity, output);
-                        (413, len)
-                    } else {
-                        let mut body = [0; api::BODY_LIMIT];
-                        if req.read_exact(&mut body[..length as usize]).is_err() {
-                            api::error_response(Error::InvalidInput, output)
-                        } else {
-                            let mut service = shared.lock().unwrap();
-                            api::handle_keyed(
-                                &mut service,
-                                method_name,
-                                req.uri(),
-                                req.header("Authorization").unwrap_or(""),
-                                req.header("Idempotency-Key").unwrap_or(""),
-                                &body[..length as usize],
-                                output,
-                            )
+                    nanacoin::web::respond(
+                        method_name,
+                        req.uri(),
+                        req.header("Accept-Encoding").unwrap_or(""),
+                        req.header("If-None-Match").unwrap_or(""),
+                    )
+                };
+                if let Some(reply) = static_reply {
+                    // Flash-backed immutable bytes: no ledger lock, no 512 KiB
+                    // response allocation, no compression or filesystem at runtime.
+                    let mut headers = heapless::Vec::<(&str, &str), 10>::new();
+                    headers.extend_from_slice(&reply.headers).unwrap();
+                    // esp-idf-svc streams with chunked transfer encoding; do not
+                    // advertise a conflicting Content-Length.
+                    headers.push(("Connection", "close")).unwrap();
+                    let mut response = req.into_response(reply.status, None, &headers)?;
+                    if method_name != "HEAD" {
+                        for chunk in reply.bytes.chunks(2048) {
+                            response.write_all(chunk)?;
                         }
                     }
-                };
-                // Outside the mutex: serialising to the socket is the slow part
-                // and no longer blocks other requests' ledger access.
-                req.into_response(status, None, &headers)?
-                    .write_all(&output[..len])?;
-                Ok(())
-            })
-        })?;
+                    return Ok(());
+                }
+                let origin = heapless::String::<256>::try_from(req.header("Origin").unwrap_or(""));
+                let allowed = origin.as_ref().is_ok_and(|o| {
+                    o.as_str() == "https://nanacoin.local"
+                        || o.as_str() == "http://nanacoin.local"
+                        || api::origin_allowed(
+                            o,
+                            option_env!("NANACOIN_ORIGINS").unwrap_or(api::DEFAULT_ORIGINS),
+                        )
+                });
+                let origin = origin.unwrap_or_default();
+                let mut generation_text = heapless::String::<24>::new();
+                let mut headers = heapless::Vec::<(&str, &str), 10>::new();
+                for pair in [
+                    ("Content-Type", "application/json"),
+                    ("Cache-Control", "no-store"),
+                    ("Connection", "close"),
+                    ("Vary", "Origin"),
+                ] {
+                    headers.push(pair).unwrap();
+                }
+                if allowed && !origin.is_empty() {
+                    headers
+                        .push(("Access-Control-Allow-Origin", origin.as_str()))
+                        .unwrap();
+                    headers
+                        .push(("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS"))
+                        .unwrap();
+                    headers
+                        .push((
+                            "Access-Control-Allow-Headers",
+                            "Authorization, Content-Type, Idempotency-Key",
+                        ))
+                        .unwrap();
+                    headers
+                        .push(("Access-Control-Expose-Headers", "X-Nanacoin-Generation"))
+                        .unwrap();
+                }
+                diagnostics.requests.fetch_add(1, Ordering::Relaxed);
+                let path = req.uri().split('?').next().unwrap_or("");
+                if allowed
+                    && method_name == "GET"
+                    && matches!(path, "/api/v1/diag" | "/api/v1/diag/static")
+                {
+                    // Small request-local buffer, reclaimed on return. In
+                    // particular, diagnostics never initialize the 512 KiB
+                    // ledger response buffer or hold a lock during socket I/O.
+                    let mut output = [0; nanacoin::diagnostics::RESPONSE_BYTES];
+                    let (status, len) = if path.ends_with("/static") {
+                        nanacoin::diagnostics::response(&diagnostics::system_info(), &mut output)
+                    } else {
+                        nanacoin::diagnostics::response(&diagnostics.snapshot(), &mut output)
+                    };
+                    if status >= 400 {
+                        diagnostics.errors.fetch_add(1, Ordering::Relaxed);
+                    }
+                    return req
+                        .into_response(status, None, &headers)?
+                        .write_all(&output[..len]);
+                }
+                RESPONSE.with(|cell| {
+                    let mut generation = None;
+                    let mut borrowed = cell.borrow_mut();
+                    let output = &mut **borrowed;
+                    let (status, len) = if !allowed {
+                        api::error_response(Error::Forbidden, output)
+                    } else if method_name == "OPTIONS" {
+                        output[..2].copy_from_slice(b"{}");
+                        (200, 2)
+                    } else {
+                        let length = if method_name == "POST" || method_name == "PATCH" {
+                            req.header("Content-Length")
+                                .and_then(|v| v.parse::<u64>().ok())
+                                .unwrap_or(u64::MAX)
+                        } else {
+                            0
+                        };
+                        if length > api::BODY_LIMIT as u64 {
+                            let (_, len) = api::error_response(Error::Capacity, output);
+                            (413, len)
+                        } else {
+                            let mut body = [0; api::BODY_LIMIT];
+                            if req.read_exact(&mut body[..length as usize]).is_err() {
+                                api::error_response(Error::InvalidInput, output)
+                            } else {
+                                let mut service = shared.lock().unwrap();
+                                let result = api::handle_keyed_on(
+                                    &mut service,
+                                    method_name,
+                                    req.uri(),
+                                    req.header("Authorization").unwrap_or(""),
+                                    req.header("Idempotency-Key").unwrap_or(""),
+                                    &body[..length as usize],
+                                    output,
+                                    tls,
+                                );
+                                generation = Some(service.generation());
+                                result
+                            }
+                        }
+                    };
+                    if let Some(value) = generation {
+                        core::fmt::Write::write_fmt(&mut generation_text, format_args!("{value}"))
+                            .unwrap();
+                        headers
+                            .push(("X-Nanacoin-Generation", generation_text.as_str()))
+                            .unwrap();
+                    }
+                    // Outside the mutex: serialising to the socket is the slow part
+                    // and no longer blocks other requests' ledger access.
+                    if status >= 400 {
+                        diagnostics.errors.fetch_add(1, Ordering::Relaxed);
+                    }
+                    req.into_response(status, None, &headers)?
+                        .write_all(&output[..len])?;
+                    Ok(())
+                })
+            })?;
+        }
     }
     let mut mdns = EspMdns::take()?;
-    // Avoid the existing MicroPython nanacoin.local advertiser.
-    mdns.set_hostname("nanacoin-rs")?;
+    // The legacy standalone UI board must not advertise this name concurrently.
+    mdns.set_hostname("nanacoin")?;
     mdns.set_instance_name("NanaCoin Rust household ledger")?;
+    mdns.add_service(
+        Some("NanaCoin setup"),
+        "_http",
+        "_tcp",
+        80,
+        &[("path", "/trust")],
+    )?;
     mdns.add_service(
         Some("NanaCoin"),
         "_https",
@@ -311,27 +306,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         443,
         &[("path", "/api/v1/status")],
     )?;
-    // Diagnostics sampler on core 0, beside Wi-Fi/lwIP and away from the
-    // HTTPS workers and ledger on core 1. It only reads heap counters and
-    // publishes atomics, so it never contends for the service mutex and keeps
-    // /api/v1/diag answerable while a write is in flight.
+    // Core 0 owns live probes. Only a small snapshot copy uses the independent
+    // diagnostics mutex; ledger work and sockets never hold that mutex.
     let sampler = Arc::clone(&diagnostics);
     // Applies to the next thread spawned on this task, then is restored so it
     // does not leak onto anything spawned later.
     ThreadSpawnConfiguration {
         name: Some(c"nanacoin-diag"),
-        stack_size: 3072,
+        stack_size: 4096,
         pin_to_core: Some(Core::Core0),
         ..Default::default()
     }
     .set()?;
-    let _sampler = std::thread::Builder::new().spawn(move || loop {
-        sampler.sample();
-        std::thread::sleep(Duration::from_secs(2));
-    })?;
+    let _sampler = std::thread::Builder::new().spawn(move || sampler.run())?;
     ThreadSpawnConfiguration::default().set()?;
+    // SAFETY: monotonic timer query has no pointer arguments.
+    diagnostics.boot_ready_ms.store(
+        unsafe { esp_idf_svc::sys::esp_timer_get_time() / 1000 } as u32,
+        Ordering::Relaxed,
+    );
     log::info!(
-        "Ready at https://nanacoin-rs.local; HTTPS/ledger core 1 (4 sockets), Wi-Fi/lwIP/diag core 0"
+        "Ready at https://nanacoin.local; bundled UI + API; HTTPS/ledger core 1 (4 sockets), Wi-Fi/lwIP/diag core 0"
     );
     loop {
         std::thread::sleep(Duration::from_secs(10));

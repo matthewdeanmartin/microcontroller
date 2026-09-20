@@ -31,6 +31,11 @@ workflow wholesale and spends the saved effort on the interesting part.
 
 ## Which one?
 
+[Rust and NanaCoin](rust/index.md) explains the active Rust implementation:
+ownership and bounded memory, ESP-IDF and PSRAM, NVS keys and checkpoint
+recovery, two-core execution, and the shared Angular diagnostic dashboard.
+Examples link to the implementation so you can follow the code while learning.
+
 [TinyGo and NanaCoin](tinygo/index.md) follows a **Go** application onto the
 ESP32-S3: a household currency, ledger and marketplace with an Angular client.
 It explains firmware development, the bounded web framework, memory management,

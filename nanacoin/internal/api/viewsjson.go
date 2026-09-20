@@ -208,6 +208,31 @@ func (j *jsonw) event(v *eventlog.Event) {
 
 func (j *jsonw) diagnostics(v *Diagnostics) {
 	j.objOpen()
+	if v.Machine.Enabled {
+		j.fInt("schema", 1)
+		j.fStr("sampling", "on_request")
+		j.fStr("memory_scope", "TinyGo managed heap; not all physical SRAM")
+		j.fUint64("sampled_at_ms", v.Machine.SampledAtMS)
+		j.fUint64("machine_samples", uint64(v.Machine.Count))
+		j.fUint64("free_heap", v.Machine.Free)
+		j.fInt("sampler_core", 0)
+		j.fInt("http_core", 0)
+		j.fInt("psram_free", 0)
+		j.fBool("psram_enabled", false)
+		j.key("internal")
+		j.objOpen()
+		j.fUint64("total", v.Machine.Total)
+		j.fUint64("free", v.Machine.Free)
+		for _, name := range [...]string{"largest", "minimum", "allocated_blocks", "free_blocks"} {
+			j.key(name)
+			j.null()
+		}
+		j.objClose()
+		for _, name := range [...]string{"largest_free_block", "minimum_free_heap", "psram", "temperature_c", "rssi_dbm", "wifi_channel", "ip", "gateway", "netmask", "unix_seconds", "tasks", "sampler_stack_free_min_bytes", "ledger_storage", "boot_ready_ms", "requests", "errors"} {
+			j.key(name)
+			j.null()
+		}
+	}
 	j.fStr("last_boot", v.LastBoot)
 	j.fBool("crashed", v.Crashed)
 	j.fUint64("boots", uint64(v.Boots))

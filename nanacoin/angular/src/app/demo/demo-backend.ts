@@ -78,6 +78,8 @@ function handle(req: HttpRequest<unknown>): unknown {
   // --- open endpoints ---
 
   if (path === '/status') return demoLedger.status();
+  if (path === '/public/ledger' && method === 'GET') return demoLedger.ledger(100);
+  if (path === '/transport' && method === 'GET') return { https_only: false, supported: false };
 
   if (path === '/provision' && method === 'POST') {
     return demoLedger.provision(
@@ -135,6 +137,8 @@ function handle(req: HttpRequest<unknown>): unknown {
   // --- everything below needs a session ---
 
   const me = current(req);
+  if (path === '/nickles' && method === 'POST') return demoLedger.createNickle(me, Number(body['amount']), (req.body as { fresh_money?: boolean }).fresh_money === true);
+  if (path === '/nickles/redeem' && method === 'POST') return demoLedger.redeemNickle(me, String(body['token'] ?? ''));
 
   if (path === '/me') return demoLedger.view(me, me);
 

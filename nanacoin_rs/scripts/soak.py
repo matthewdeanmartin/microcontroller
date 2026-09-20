@@ -16,8 +16,8 @@ import urllib.request
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="https://nanacoin-rs.local")
-    parser.add_argument("--ca", default="certs/server.crt")
+    parser.add_argument("--url", default="https://nanacoin.local")
+    parser.add_argument("--ca", default="certs/home-ca.crt")
     parser.add_argument("--seconds", type=int, default=60)
     args = parser.parse_args()
     if not 1 <= args.seconds <= 86400:

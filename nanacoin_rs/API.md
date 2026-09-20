@@ -1,8 +1,27 @@
 # JSON API v1
 
-The API serves JSON only; the existing Angular / `nanacoin_web` client is hosted separately. Desktop uses loopback HTTP on port 8080 and firmware uses HTTPS. CORS allows configured exact origins, with GET/POST/PATCH/OPTIONS and Authorization, Content-Type and Idempotency-Key headers. Request bodies are limited to 1,024 bytes.
+`/api/v1/*` serves JSON. Firmware also serves Angular at `https://nanacoin.local/`;
+a separately hosted client remains supported. Desktop uses loopback HTTP on
+port 8080 (enable `bundled-web` to serve the UI). CORS allows configured exact
+origins and the board's own HTTP/HTTPS origins. API bodies are limited to 1,024 bytes.
+Static GET routes dispatch before ledger locking, with gzip negotiation, ETags
+and hashed-asset caching. Unknown API routes never fall back to HTML.
 
 ## Provision and login
+
+Transport policy applies before all API routes. Easy mode accepts HTTP and HTTPS.
+Secure mode refuses every HTTP API request, including otherwise public routes.
+
+- `GET /api/v1/transport`: public `{ "https_only": false, "supported": true }`.
+- `POST /api/v1/admin/transport`: Nana bearer token, TLS listener only, body
+  `{ "confirmation": "REQUIRE HTTPS" }`. Returns `true`, persists Secure mode,
+  and revokes all sessions/pending codes. No remote disable operation exists.
+- `GET /trust`: public, standalone installation instructions on either listener.
+- `GET /ca`: public DER CA certificate attachment on either listener; never a key.
+
+Secure HTTP serves only `/`, `/trust`, `/ca`, rejecting other paths and non-GET
+methods. Economy reset does not clear this policy. See
+[connection security](CONNECTION_SECURITY.md) for onboarding and USB recovery.
 
 `GET /api/v1/status` is public. On an empty journal, `POST /api/v1/provision` takes:
 
@@ -72,11 +91,48 @@ Creation/money endpoints return 201; updates, cancellation and unaccept return 2
 
 Quote rates are 1–10,000 cents/coin and sizes 1–100,000 coins; there are 16 slots. Proposals do not reserve funds; taking validates both currencies and active parties. Timed quote operations require the same valid clock as offers. Expired quotes display EXPIRED and can be recycled. Transaction IDs are opaque: forex cash-leg IDs use the disjoint event-sequence + 4096 range so existing Rust event/transaction IDs remain compatible. Use response order and timestamps, not numeric ID sorting.
 
+## Journal maintenance
+
+Nana-only `GET /api/v1/admin/storage` returns `generation`, `sequence`,
+`journal_records`, `checkpoint_after` (2,048), and `checkpoint_supported`.
+`POST /api/v1/admin/checkpoint` accepts `expected_generation` and
+`expected_sequence`, saves current state and reclaims the old journal.
+`POST /api/v1/admin/reset` takes those same fields plus
+`"confirmation":"RESET ECONOMY"`; it removes the whole household and revokes
+all sessions. Both reject intervening changes with 409, reject non-Nana users
+with 403, and return the new storage status on success. Reset is not retried
+automatically; re-read public status after a disconnected response.
+
+Public status includes `journal_generation` and `checkpoint_supported`.
+`journal_used` now measures the active log, not lifetime sequence numbers.
+Ordinary API responses expose `X-Nanacoin-Generation` through CORS. New
+idempotency keys must use `g<generation>:<random>`; retained old keys still
+deduplicate, while unknown retired keys fail with `stale_request`. Legacy
+unprefixed keys work in generation zero only unless a receipt is retained.
+See [RETENTION.md](RETENTION.md) for the complete recovery and retry contract.
+
+Event IDs skip reserved blocks after 4,096 to preserve the disjoint forex
+cash-leg range. Checkpointing never resets IDs; economy reset does.
+
 ## Diagnostics
 
-`GET /api/v1/diag` needs no authentication and takes no ledger lock, so it
-answers while a write is in flight. It is sampled every two seconds by a task
-pinned to core 0, away from the HTTPS workers and the ledger on core 1.
+`GET /api/v1/diag` and `GET /api/v1/diag/static` need no authentication, retain
+the normal origin policy, and take no ledger lock. They use a 4096-byte
+request-local response buffer, bypassing the large ledger response buffer.
+Serialization overflow returns an error, never truncated successful JSON.
+The Angular Machine health page is in Nana's administrator navigation.
+
+Live readings are sampled every two seconds on core 0, away from HTTPS and
+ledger work on core 1. A separate mutex protects only copying the small,
+fixed snapshot (the complete shared object is compile-time capped at 288
+bytes). Probes, serialization and socket writes run outside that mutex.
+The sampler has a 4096-byte stack and one temperature-driver handle created
+at startup. There is no board-side history, per-sample allocation, or
+diagnostic flash write. NVS queries use IDF's own storage lock outside the
+snapshot lock, so the last published snapshot remains available if a probe
+is delayed. HTTP requests can still queue behind occupied server sockets.
+
+Original fields remain compatible with existing soak scripts:
 
 ```json
 {"uptime_seconds":977,"free_heap":159683,"largest_free_block":63488,
@@ -84,11 +140,47 @@ pinned to core 0, away from the HTTPS workers and the ledger on core 1.
  "sampler_core":0,"http_core":1}
 ```
 
-Sizes are bytes of internal (DMA-capable) heap, except `psram_free`.
-`largest_free_block` is the fragmentation signal: it holding steady while
-`free_heap` moves means the heap is not fragmenting. `minimum_free_heap` is the
-low-water mark since boot and never recovers, by design. Firmware only; the
-desktop server does not serve this route.
+The expanded response adds `schema: 1`, `sampled_at_ms`, `internal` and
+`psram` heap objects (total/free/largest/minimum bytes and allocated/free
+block counts), `temperature_c`, `rssi_dbm`, `wifi_channel`, IPv4 arrays
+`ip`/`gateway`/`netmask`, `unix_seconds`, task count, sampler stack minimum
+free bytes, reset-to-ready milliseconds, and HTTP request/error counters.
+Counters count requests reaching the handler and HTTP error responses,
+not TLS handshake failures or socket disconnects. Counters wrap at u32 max.
+Unavailable probes are JSON null, including an unsynchronized wall clock.
+The temperature range is 10–80 C; failed/out-of-range readings are null.
+
+Heap sizes use INTERNAL|8BIT and SPIRAM capabilities, respectively. The
+largest block measures single-allocation headroom; total free space alone
+cannot establish fragmentation or TLS capacity. Minimum free records the
+low-water mark since boot. Heap figures are capability aggregates, not
+individual physical regions, and allocator metadata is not usable capacity.
+
+`ledger_storage` contains read-only NVS used/free/available/total entry
+counts, refreshed every 30 seconds with `storage_sampled_at_ms`. These are
+storage entries, not transaction counts or erase-cycle estimates. Existing
+ledger persistence still commits every journal append; diagnostics does
+not change that policy.
+
+`/diag/static` queries chip model/revision/core count, CPU MHz, reset reason,
+firmware/IDF versions, physical flash size and the actual partition table.
+Its fixed-capacity list holds at most 16 partitions and reports truncation.
+The IDF partition iterator is released, and temporary data is dropped at
+request end. Static queries execute in the HTTP handler; recurring live
+probes execute on core 0. Neither reads journal contents or credentials.
+
+These routes are firmware-only. `/status` advertises `diag_enabled: true`
+on ESP-IDF and false on desktop. The dashboard fetches static information
+once, polls live information without overlapping requests, suspends polling
+in hidden tabs, and aborts requests on navigation. Its 120-sample history
+exists only in the browser and clears on a detected uptime decrease.
+
+Compared with `hello_wifi_s3_py`, Rust has no Python module list, GC, or
+mounted file tree; the dashboard shows Rust/IDF and NVS/partition information
+instead. This adds observational diagnostics, not GPIO reconfiguration,
+Wi-Fi scans, forced NTP synchronization, CPU benchmarks, or CPU-utilization
+instrumentation. Boot reporting is total reset-to-ready time, not a phase
+trace. Die temperature is not ambient temperature.
 
 ## Errors and limits
 

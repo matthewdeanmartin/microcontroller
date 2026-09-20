@@ -1,5 +1,10 @@
 # TinyGo and NanaCoin
 
+This implementation is frozen except for diagnostic API compatibility work.
+For the active implementation, see [Rust and NanaCoin](../rust/index.md).
+The Go board uses internal RAM and a volatile journal; the Rust board also
+uses PSRAM and persistent NVS. These are not equivalent memory configurations.
+
 NanaCoin is a household currency and marketplace running on an ESP32-S3.
 It has accounts, passwords, a ledger, listings and a browser application.
 The interesting constraint is that the server lives on a microcontroller:

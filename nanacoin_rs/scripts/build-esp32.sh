@@ -17,7 +17,8 @@ if [[ -z "${NANACOIN_WIFI_SSID:-}" || -z "${NANACOIN_WIFI_PASSWORD:-}" ]]; then
   fi
   echo "Wi-Fi credentials: $have_file (override by exporting NANACOIN_WIFI_*)"
 fi
-[[ -f certs/server.crt && -f certs/server.key ]] || { echo 'Run bash scripts/dev-certs.sh first' >&2; exit 1; }
+bash scripts/build-web.sh
+bash scripts/dev-certs.sh
 # Git Bash support for the existing official Windows ESP-IDF installation.
 # Elsewhere, source your ESP-IDF and espup export scripts before this script.
 if [[ -d /c/Espressif/frameworks/esp-idf-v5.5.3 ]]; then
@@ -50,3 +51,8 @@ if command -v cygpath >/dev/null 2>&1; then
 fi
 cargo +esp build --locked --release --no-default-features --features esp32 \
   --bin nanacoin-esp32 --target xtensa-esp32s3-espidf -Z build-std=std,panic_abort "$@"
+esp_python="${NANACOIN_ESPTOOL_PYTHON:-python}"
+if [[ -z "${NANACOIN_ESPTOOL_PYTHON:-}" && -f /c/Espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe ]]; then
+  esp_python=/c/Espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe
+fi
+"$esp_python" scripts/firmware-image.py "${CARGO_TARGET_DIR:-target}/xtensa-esp32s3-espidf/release/nanacoin-esp32"

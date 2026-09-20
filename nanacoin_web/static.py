@@ -53,6 +53,7 @@ TYPES = {
     "jpg": "image/jpeg",
     "webp": "image/webp",
     "woff2": "font/woff2",
+    "ttf": "font/ttf",
     "txt": "text/plain; charset=utf-8",
     "map": "application/json",
 }

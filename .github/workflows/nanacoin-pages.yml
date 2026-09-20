@@ -71,6 +71,13 @@ jobs:
         working-directory: nanacoin/angular
         run: npx ng build --configuration demo --base-href "$BASE_HREF"
 
+      - name: Test the actual static site in a browser
+        working-directory: nanacoin/angular
+        run: |
+          python -m pip install playwright==1.63.0
+          python -m playwright install --with-deps chromium
+          python scripts/showcase-check.py
+
       # Hash routing means every route is /#/market, so a 404 fallback is not
       # strictly needed - but a mistyped path should land on the app rather
       # than on GitHub's own 404 page.

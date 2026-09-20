@@ -11,6 +11,7 @@ import { LoggingErrorHandler } from './api/error-handler';
 import { IS_DEMO } from './demo/demo';
 import { demoBackend } from './demo/demo-backend';
 import { routes } from './app.routes';
+import { journalGenerationInterceptor } from './api/nanacoin.service';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -28,6 +29,7 @@ export const appConfig: ApplicationConfig = {
     // the whole demo away rather than shipping a mock it never calls.
     provideHttpClient(
       withFetch(),
+      withInterceptors([journalGenerationInterceptor]),
       ...(IS_DEMO ? [withInterceptors([demoBackend])] : []),
     ),
     // Hash routing: this is a static site that may end up on a plain file
