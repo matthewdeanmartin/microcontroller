@@ -73,11 +73,10 @@ The client remembers it in `localStorage`, so it is a one-time step per
 browser. Without the parameter the site asks for the address on a connect
 screen, which is the same thing with more typing.
 
-**The name only works in one direction.** This board is `nanacoin.local`
-because MicroPython's network stack answers mDNS. The S3 is not, because
-NanaCoin's TinyGo firmware uses espradio, which ships no mDNS responder - so
-the API is reachable by IP only, and that IP can move with the DHCP lease. A
-DHCP reservation on the router is the five-minute fix.
+Both boards now have distinct mDNS names: this MicroPython web board is
+`nanacoin.local`, and the TinyGo S3 API is `nanacoin-api.local`. Open
+`http://nanacoin.local/?api=nanacoin-api.local` to connect them without a fixed
+IP address. The printed DHCP addresses remain a fallback if mDNS is blocked.
 
 ## Why HTTP, and why that is not negotiable here
 

@@ -156,7 +156,12 @@
   </form>
 </details>
 
-<details class="disclosure">
+<!--
+  Held open while seeding and after a failure. A <details> that closes on
+  re-render took the only report of what went wrong with it, which is how a
+  stopped run came to look like nothing happening at all.
+-->
+<details class="disclosure" [open]="seeder.running() || !!seeder.lastError()">
   <summary>Fill this household with a year of history</summary>
   <p class="muted small">
     Creates members, issues them a float, posts listings and plays out a year of
@@ -184,7 +189,11 @@
   }
 
   @if (seeder.lastError()) {
-    <p class="warning">Stopped early: {{ seeder.lastError() }}</p>
+    <p class="warning">Stopped early — {{ seeder.lastError() }}</p>
+    <p class="muted small">
+      Whatever was written before it stopped is real and stays. Running it
+      again picks up from where the household is now.
+    </p>
   }
 </details>
 

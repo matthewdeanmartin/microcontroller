@@ -21,7 +21,7 @@ Codes expire after 60 seconds and are consumed on redemption, including unsucces
 
 ## Existing client adapter
 
-IDs use user-1, account-1, listing-5 and tx-6 forms. Roles are NANA/USER and member statuses ACTIVE/DISABLED. All paths below have prefix `/api/v1`.
+IDs use user-1, account-1, listing-5 and tx-6 forms. Roles are nana/user and member statuses ACTIVE/DISABLED. All paths below have prefix `/api/v1`.
 
 | Endpoint | Purpose |
 |---|---|
@@ -29,11 +29,12 @@ IDs use user-1, account-1, listing-5 and tx-6 forms. Roles are NANA/USER and mem
 | POST `/users` | Nana creates member with username, display_name, password, optional role/grant |
 | PATCH `/users/user-N` | Name/password; Nana can also change role/status or other members |
 | GET `/transactions`, `/transactions/tx-N` | Recent ledger and individual transaction |
-| GET `/accounts/account-N/transactions` | Balance and retained postings |
+| GET `/accounts/account-N`, `/accounts/account-N/transactions` | Own balance/history, or any account for Nana; `account-N-usd` selects dollars |
 | POST `/transfers` | Transfer with to, amount, memo |
 | POST `/admin/issue`, `/admin/retire` | Nana issuance/retirement |
 | POST `/transactions/tx-N/reverse` | Nana reversal with reason |
 | GET/POST `/listings` | Query/create listings |
+| GET `/listings/listing-N` | Read one listing |
 | PATCH `/listings/listing-N` | Edit title, description, price |
 | POST `/listings/listing-N/purchase`, `/listings/listing-N/cancel` | Purchase/cancel |
 | GET/PATCH `/admin/config` | household_name, initial_grant, currency, offer_settles_after (seconds; zero restores 48 hours) |
@@ -43,8 +44,13 @@ IDs use user-1, account-1, listing-5 and tx-6 forms. Roles are NANA/USER and mem
 | POST `/offers/offer-N/unaccept` | Either party or Nana undoes before deadline, with reason (140 UTF-8 bytes) and Idempotency-Key |
 | POST `/offers/offer-N/decline` | Listing owner or Nana declines |
 | POST `/offers/offer-N/withdraw` | Offerer or Nana withdraws |
+| POST `/admin/issue-usd` | Nana issues cents to a coin account ID; fields to, cents, reason; keyed |
+| GET/POST `/quotes` | Best-rate-first book; create with side BID/ASK, cents_per_coin, coins, optional expires_at |
+| GET `/quotes/quote-N` | Quote, wallet parties, rate, timestamps and live status |
+| POST `/quotes/quote-N/take` | Keyed, atomic coin/cash exchange; returns quote, coin_transaction, cash_transaction |
+| POST `/quotes/quote-N/cancel` | Maker or Nana cancels |
 
-See `src/client.rs` and `src/client/offers.rs` for bounded schemas and response views. Offer views include id, listing, listing_title, offerer, offerer_name, amount, message, status, created_at, updated_at, reversible, and (after acceptance) settled_tx and settles_at. Accept/unaccept return `{ "offer": {...}, "transaction": {...} }`. Statuses are OPEN, ACCEPTED, SETTLED, DECLINED, WITHDRAWN and REVERSED. Settlement is computed from the persisted deadline; GET never writes a settlement event. `/state` omits private offers; use the visibility-filtered offer routes.
+See `src/client.rs` and `src/client/offers.rs` for bounded schemas and response views. Offer views include id, listing, listing_title, offerer, offerer_name, amount, message, status, created_at, updated_at, reversible, and (after acceptance) settled_tx and settles_at. Accept/unaccept return `{ "offer": {...}, "transaction": {...} }`. Statuses are OPEN, ACCEPTED, SETTLED, DECLINED, WITHDRAWN and REVERSED. Settlement is computed from the persisted deadline; GET never writes a settlement event. `/state` is Nana-only and omits private offers; use the visibility-filtered offer routes. `/transactions` is Nana-only; individual transactions require participation or Nana. `/users` hides other members' balances from ordinary users. Member and listing timestamps persist. Listings retain kind (item/service/currency), currency and minor_units, and include buyer_name when sold.
 
 Only the owner may accept, including when Nana is another member. SELL debits the offerer; BUY debits the owner. Acceptance checks both accounts and funds and closes the listing. Decline/withdraw move no money. At the exact deadline, unaccept refuses even for Nana. Within the window it allows a correction overdraft and atomically reverses payment, marks the offer REVERSED and reopens the listing. It works even after the original payment leaves recent history. Manual Nana reversals remain separate and prevent duplicate refunds. Reusing an acceptance key after unaccept returns its original acceptance receipt while retained; it does not accept again.
 
@@ -52,15 +58,37 @@ Money requests supply an `Idempotency-Key` of 1–80 bytes. Retry with the same 
 
 ## Typed command API
 
-`GET /api/v1/state` returns member, state and storage_failed fields, excluding credential verifiers and internal retry fingerprints. `POST /api/v1/commands` accepts an externally tagged Rust command:
+Nana-only `GET /api/v1/state` returns member, state and storage_failed fields, excluding credential verifiers and internal retry fingerprints. `POST /api/v1/commands` accepts an externally tagged Rust command:
 
 ```json
 {"request_id":2,"command":{"issue":{"to":1,"amount":25,"memo":"Chores"}}}
 ```
 
-Variants include issue, retire, transfer, list, update_listing, cancel, buy, reverse, make_offer, accept_offer, unaccept_offer, decline_offer, withdraw_offer and Nana-only configure. Offer commands use a typed OfferId represented as an integer. Timestamps are server-owned event metadata, not command fields. Credential creation/update/migration variants are rejected here; use dedicated endpoints. Obsolete add_member exists for legacy journal replay only and cannot be submitted over HTTP.
+Variants include issue, retire, transfer, list, update_listing, cancel, buy, reverse, make_offer, accept_offer, unaccept_offer, decline_offer, withdraw_offer issue_usd, post_quote, take_quote, cancel_quote, and Nana-only configure. Offer commands use a typed OfferId represented as an integer. Timestamps are server-owned event metadata, not command fields. Credential creation/update/migration variants are rejected here; use dedicated endpoints. Obsolete add_member exists for legacy journal replay only and cannot be submitted over HTTP.
 
 The typed endpoint uses per-member monotonic request_id values: start at last_request + 1. The same most-recent ID and command returns the original sequence receipt with replayed=true. A changed command conflicts; an older ID is stale. Failed commands do not advance the watermark. Do not assign a fresh ID to an uncertain operation. The adapter's durable Idempotency-Key index provides stronger retry history than this last-request contract.
+
+Creation/money endpoints return 201; updates, cancellation and unaccept return 200; logout returns 204 without a body. Ledger pages default to 100 globally or 50 per account, cap at 100, and read from the 365-record ring. Listings are newest first, with validated status filters.
+
+Quote rates are 1–10,000 cents/coin and sizes 1–100,000 coins; there are 16 slots. Proposals do not reserve funds; taking validates both currencies and active parties. Timed quote operations require the same valid clock as offers. Expired quotes display EXPIRED and can be recycled. Transaction IDs are opaque: forex cash-leg IDs use the disjoint event-sequence + 4096 range so existing Rust event/transaction IDs remain compatible. Use response order and timestamps, not numeric ID sorting.
+
+## Diagnostics
+
+`GET /api/v1/diag` needs no authentication and takes no ledger lock, so it
+answers while a write is in flight. It is sampled every two seconds by a task
+pinned to core 0, away from the HTTPS workers and the ledger on core 1.
+
+```json
+{"uptime_seconds":977,"free_heap":159683,"largest_free_block":63488,
+ "minimum_free_heap":80599,"psram_free":7359116,"samples":480,
+ "sampler_core":0,"http_core":1}
+```
+
+Sizes are bytes of internal (DMA-capable) heap, except `psram_free`.
+`largest_free_block` is the fragmentation signal: it holding steady while
+`free_heap` moves means the heap is not fragmenting. `minimum_free_heap` is the
+low-water mark since boot and never recovers, by design. Firmware only; the
+desktop server does not serve this route.
 
 ## Errors and limits
 

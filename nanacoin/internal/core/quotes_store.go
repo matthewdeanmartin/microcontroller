@@ -81,9 +81,15 @@ func (q *packedQuote) closed() bool {
 }
 
 func (s *store) findQuote(id ledger.QuoteID) int {
+	if id == "" {
+		return -1
+	}
+	// Arena.Equal, not Get: Get builds a string per slot examined, so a miss
+	// over a full table allocated one string per quote to return -1.
+	want := string(id)
 	for i := range s.quotesArr {
 		p := &s.quotesArr[i]
-		if p.InUse && s.arena.Get(p.ID) == string(id) {
+		if p.InUse && s.arena.Equal(p.ID, want) {
 			return i
 		}
 	}

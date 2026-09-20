@@ -9,7 +9,7 @@ import gevent
 import requests
 from locust import HttpUser, LoadTestShape, between, events, task
 
-from .common import ORIGIN, Evidence, credentials, health, load_fixture, pkce
+from .common import MONITOR_PATH, ORIGIN, VERIFY, Evidence, credentials, health, load_fixture, pkce
 
 SCENARIO = os.getenv("NANA_SCENARIO", "status")
 RUN = Path(os.environ["NANA_RUN"])
@@ -52,17 +52,16 @@ def monitor(environment):
     """Independent, low-rate diagnostic traffic, excluded from Locust workload statistics."""
     session = requests.Session()
     session.trust_env = False
+    session.verify = VERIFY
     last_uptime = None
     misses = 0
     while not STOPPING:
         started = time.monotonic()
         try:
-            r = session.get(environment.host + "/api/v1/diag", timeout=(3, 5))
+            r = session.get(environment.host + MONITOR_PATH, timeout=(3, 5))
             r.raise_for_status()
             data = r.json()
-            if "uptime_seconds" not in data:
-                raise ValueError("missing diagnostic uptime")
-            uptime = data["uptime_seconds"]
+            uptime = data.get("uptime_seconds")
             TRACE.emit(
                 "snapshot",
                 role="monitor",
@@ -71,9 +70,12 @@ def monitor(environment):
                 data=data,
             )
             misses = 0
-            if last_uptime is not None and uptime < last_uptime:
-                stop(environment, "uptime decreased: reboot observed")
-            last_uptime = uptime
+            if uptime is not None:
+                if last_uptime is not None and uptime < last_uptime:
+                    stop(environment, "uptime decreased: reboot observed")
+                last_uptime = uptime
+            elif data.get("ledger_balanced") is False:
+                stop(environment, "ledger invariant failed in monitor probe")
         except (requests.RequestException, ValueError, KeyError) as exc:
             misses += 1
             TRACE.emit(
@@ -151,6 +153,7 @@ class NanaUser(HttpUser):
     def on_start(self):
         global USER_INDEX
         self.client.trust_env = False
+        self.client.verify = VERIFY
         self.client.headers.update({"Origin": ORIGIN})
         self.identity = None
         if FIXTURE:
@@ -184,7 +187,8 @@ class NanaUser(HttpUser):
             json=body,
             headers=headers,
             name=label,
-            timeout=(4, 10),
+            timeout=(float(os.getenv("NANA_CONNECT_TIMEOUT", "4")),
+                     float(os.getenv("NANA_READ_TIMEOUT", "10"))),
             catch_response=True,
             hooks={"response": received_headers},
         ) as response:
@@ -250,7 +254,7 @@ class NanaUser(HttpUser):
             item = self.call(
                 "POST",
                 "/api/v1/listings",
-                {"title": "Locust item", "description": "x" * 200, "price": 1},
+                {"title": "Locust item", "description": "x" * 96, "price": 1},
                 seller,
                 201,
             )
@@ -264,6 +268,40 @@ class NanaUser(HttpUser):
                     uuid.uuid4().hex,
                     "purchase",
                 )
+        elif SCENARIO == "forex":
+            # Currency trading, which is the heaviest write the board has.
+            #
+            # Every other write produces one ledger record. A trade produces
+            # two - the coin leg and the cash leg - so it is the request most
+            # able to exhaust a fragmented heap, and the one worth driving
+            # concurrently rather than in a sequential script.
+            #
+            # Posting and taking are counted separately: posting moves no
+            # money and should stay cheap, while taking is the two-record
+            # write. If the board is going to struggle it will show up as the
+            # gap between those two lines.
+            maker, taker = FIXTURE["members"]
+            quote = self.call(
+                "POST",
+                "/api/v1/quotes",
+                {"side": "ASK", "cents_per_coin": 1, "coins": 1},
+                maker,
+                201,
+                name="post-quote",
+            )
+            if quote:
+                self.call(
+                    "POST",
+                    f"/api/v1/quotes/{quote['id']}/take",
+                    {},
+                    taker,
+                    201,
+                    uuid.uuid4().hex,
+                    "take-quote",
+                )
+            # Reading the book is what the Angular page polls, so it belongs
+            # in the same mix rather than in a separate run.
+            self.call("GET", "/api/v1/quotes", None, maker, 200, name="read-book")
         elif SCENARIO == "seed":
             # The write mix the Angular "add a year of history" button makes.
             #
@@ -287,7 +325,7 @@ class NanaUser(HttpUser):
             self.call(
                 "POST",
                 "/api/v1/transfers",
-                {"to": buyer["account"], "amount": 1, "memo": "Take out the trash"},
+                {"to": buyer["user"]["account"], "amount": 1, "memo": "Take out the trash"},
                 seller,
                 201,
                 uuid.uuid4().hex,

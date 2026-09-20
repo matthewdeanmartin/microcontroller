@@ -306,3 +306,330 @@ unattributed; a strong-signal comparison is needed to isolate Wi-Fi effects.
 Application allocations remain (owned strings, IDs, snapshots and some typed
 objects), as do network/runtime allocations. Do not describe this as zero-alloc
 or a proven endurance limit. No per-request flash persistence was introduced.
+
+# Foreign exchange — 2026-09-19
+
+Forex adds the first write that produces **two** ledger records: a trade is a
+coin leg and a cash leg, because `MaxInlinePostings` is 2 and raising it to 4
+costs 7.1 KB across the ring. Two records per request is the reason this
+feature got an allocation audit before flashing rather than after.
+
+## What was allocating, and what it cost
+
+Found with `go build -gcflags=-m` and confirmed by profiling
+`BenchmarkWriteAllocs` at `-memprofilerate=1`.
+
+| Site | Problem | Fix |
+|---|---|---|
+| `TakeQuote` | both legs were locals with `[]ledger.Posting{...}` literals — 4 heap objects per trade | both legs moved into the caller's `WriteResult`, the scratch buffer every other write endpoint already used |
+| `TakeQuote` | `for _, a := range []ledger.AccountID{...}` allocated a slice per take | a `[4]` stack array |
+| `Book.BalanceIn` | `USDAccount()` concatenated a string per call — once per user on every `/me` and household listing | built in a stack buffer, looked up via the new `Strings.FindBytes` |
+| `findQuote` / `findOffer` / `findListing` | `arena.Get()` built a string **per occupied slot** just to compare | the new `Arena.Equal`, which compares in place |
+
+Measured per call, at the service layer (`BenchmarkWriteAllocs`):
+
+| Path | Before | After |
+|---|---:|---:|
+| take-quote (incl. its PostQuote) | 54 | 49 |
+| usd-balance | 1 | **0** |
+| `GET /offers` (whole request) | 145 | 125 |
+
+The `Arena.Equal` change helps listings and offers too — it was a shared bug,
+not a forex one.
+
+### What was deliberately left alone
+
+- The two `USDAccount` calls that build the cash leg's posting accounts. Those
+  names are stored in the transaction and outlive the call, so they cannot use
+  a stack buffer. Two allocations per trade for retained data is the same
+  price the coin accounts pay.
+- One heap event per write (`&someEvent{}` at every `commitEvent` site). This
+  is every endpoint in the codebase, not forex, and `commitEvent` takes `any`
+  so the interface boxing forces it. Changing it is a separate job.
+- `unpackQuote` costs 2 allocations per quote when reading the book. Offers
+  and listings unpack identically; the fix belongs to all three at once.
+
+## RAM cost on the board
+
+Measured by compiling for `GOARCH=386` (the linker's `-size` figure does not
+move, because the record pool is a boot-time heap allocation, not `bss`):
+
+| | Before | After |
+|---|---:|---:|
+| `core.WriteResult` | 108 B | 216 B |
+| `api.recordBuffer` | 2,924 B | 3,032 B |
+| pool of 4 | 11,696 B | 12,128 B |
+
+**+432 bytes**, taken once at boot — which is the shape this board needs, since
+allocating late is what causes OOM. Free heap at boot after flashing: 17,840
+bytes.
+
+## On hardware
+
+`ncload e2e` — 23 checks, all passing, 15 of them new forex ones covering both
+directions of money, idempotent replay, the refusals, and book ordering.
+
+Sequential soak, 40 trades, zero failures:
+
+| After | Free heap | Live objects |
+|---|---:|---:|
+| 10 trades | 12,176 | 521 |
+| 20 trades | 11,968 | 521 |
+| 30 trades | 11,872 | 521 |
+| 40 trades | 11,872 | 521 |
+
+Object count pins at 521 from trade 10 and free heap stops moving at trade 30:
+the early dip is the quote table and ledger ring reaching steady state, not a
+leak.
+
+Concurrent (`--scenario forex`):
+
+| Run | Requests | Failures | p50 | p99 |
+|---|---:|---:|---:|---:|
+| 1 user, 60s | 195 | 0 | 79 ms | 210 ms |
+| ramp 1→8, 30s stages | 1,017 | 0 | 140 ms | 1,500 ms |
+
+Ledger balanced across both currencies after 814 transactions, 7,728 bytes
+free and still serving. The board degrades by getting slower, not by dropping
+requests — no 503s and no silent drops at 8 users.
+
+## Keeping it this way
+
+`TestWritePathsStayWithinAllocationBudget` (in `internal/core`) turns the
+numbers above into a rule, so a regression fails `go test` instead of waiting
+to be found on hardware. The budgets are the measured count plus a small
+margin, deliberately tight: the first version allowed 60 for take-quote, and
+re-introducing the exact regression it was written to catch still passed it.
+Heap postings cost 2 allocations per transaction, so a two-leg regression is
+4 — which the 49-vs-53 margin now catches.
+
+Re-run after any change to a write path:
+
+    go test ./internal/core/ -run TestWritePathsStayWithinAllocationBudget
+    go test ./internal/core/ -run XXX -bench BenchmarkWriteAllocs -benchmem
+    make e2e HOST=http://<board>
+    make load SCENARIO=forex USERS=1 DURATION=60
+    make ramp SCENARIO=forex
+
+Note: the board's tables fill up. A `507` on `POST /listings` after a load run
+means the listing table is full, not that the board is broken — reflash to
+clear RAM state before an `e2e` run.
+
+# "Stopped early: invalid or expired token" — 2026-09-19
+
+The demo seeder ran for a few minutes and stopped, reporting a dead token,
+with no clue on screen about why. Three separate faults stacked up.
+
+## 1. The session table filled and never emptied
+
+`newSessionLocked` took the first free-or-expired slot and otherwise returned
+`ErrTooManySessions`. Nothing in this system logs out: sessions are RAM-only,
+last eight hours, and the account switcher holds several at once by design.
+The seeder signs in as Nana plus every member on each run, so a few runs
+filled the board's 32 slots with live sessions nobody held any more — and the
+board then refused every login for the rest of the day.
+
+Measured on the board before the fix: **refused at 17 logins** (the Locust
+fixture held the rest), permanently.
+
+**Fix**: when the table is full, reuse the *caller's own* oldest session
+rather than refusing. Logging in again as yourself can cost you your stalest
+session; it can never cost anyone else theirs, so a full table of other
+people still refuses honestly.
+
+After the fix: **29+ consecutive logins all succeed**, and three back-to-back
+seed runs (15 logins, 180 writes) complete with zero failures and identical
+heap.
+
+A per-user cap was tried first and rejected: it broke
+`TestSessionCapacityExpiryAndValueIsolation`, which deliberately asserts that
+one user may fill the table and that no live session is ever evicted. The
+eviction-when-full form keeps that guarantee.
+
+## 2. The error message was the server's internal wording
+
+`writeError` sends `err.Error()` as the user-facing message, so
+`auth.ErrNoSession` surfaced literally as "invalid or expired token" — true,
+and useless. Worse, it named the *wrong* failure: the refusal was a 503 on
+`/auth/authorize`, but the client had already dropped the account it could
+not re-authenticate, so what the user saw was the *next* request failing with
+a dead token.
+
+**Fix**: the seeder now maps the error to something actionable
+(`too_many_sessions`, 401 and 507 each get their own sentence) and logs the
+raw code, status and phase alongside.
+
+Also noted in the code: the `too_many_sessions` 503 deliberately carries no
+`Retry-After`. The client only retries a 503 when that header says how long
+to wait, and waiting cannot help — sessions free on expiry, hours away.
+
+## 3. The failure was reported inside a panel that closed itself
+
+The only report was a `<p class="warning">` inside a `<details>` that
+collapsed on re-render, so the run appeared to stop for no reason. There was
+a toast on success and nothing on failure.
+
+**Fix**: a toast on failure like every other error in the app, and the
+`<details>` is held open while running and after a failure.
+
+## Reusable
+
+- `TestRepeatedLoginRecyclesYourOwnSession`, `TestLoginNeverEvictsAnotherUser`
+  and `TestAFullTableOfOtherPeopleStillRefuses` in `internal/auth` pin all
+  three halves of the eviction rule.
+- Reproduction scripts are in the session scratchpad, not the repo; the
+  behaviour they checked is now covered by the Go tests above.
+
+# Rust firmware on hardware — 2026-09-19
+
+First run of `nanacoin_rs` on the physical ESP32-S3 (N16R8, 16 MB flash,
+8 MB octal PSRAM, MAC `ac:a7:04:2c:2c:04`). The board had never been flashed
+with the Rust build; the previous sections on this page all describe TinyGo.
+
+Flashed bootloader/partition table/app at `0x0`/`0x8000`/`0x10000` over the
+CH343 bridge on COM8. The app image had to be produced with `elf2image`: the
+build script deliberately stops at the ELF. Board came up at `192.168.1.158`,
+HTTPS on 443, mDNS `nanacoin-rs.local`.
+
+## The result
+
+**The board did not fall over.** 68 minutes of continuous uptime across every
+workload below, with no reboot: 352 consecutive serial heap samples with
+monotonically increasing tick counts. No panic, no `out of memory`, no
+`abort called`, no `Guru Meditation` anywhere in the serial log.
+
+| | TinyGo (2026-09-18) | Rust (2026-09-19) |
+|---|---|---|
+| Free heap at rest | ~9,700 B | 164,767 B |
+| Survived provisioning | no (OOM) | yes |
+| Survived auth churn | no (OOM, three images) | yes, 170 requests |
+| Heap after ~2,900 requests | died long before | 164,719 B |
+
+Free heap returns to **164,7xx after every single run**, from a floor of
+105,299 B under the heaviest mixed load. That is the whole difference: the Go
+board spent memory permanently per request, the Rust board borrows and
+returns it.
+
+`largest free block` was **63,488 in all 353 samples — one value, never once
+varying**, including under 20-way connection bursts. There is no measurable
+fragmentation, which is the failure mode that forced the TinyGo rewrites.
+
+## Workloads run
+
+All at 0–50 ms think time against the real board. `seed` is the mix the
+Angular "add a year of history" button makes; `forex` is the two-ledger-record
+currency trade.
+
+| Scenario | Requests | 5xx | Note |
+|---|---:|---:|---|
+| seed (6 min) | 455 | 0 | listing/transfer/offer/accept lifecycle |
+| forex (5 min) | 401 | 0 | 103 two-record trades |
+| forex (10 min) | 646 | 0 | endurance; heap unchanged after |
+| write (5 min) | 384 | 0 | crossed the 365-record ring wrap |
+| browse / ledger / replay | 342 | 0 | 5×, 1×, 4× concurrency |
+| auth / status | 343 | 0 | PBKDF2 churn: killed TinyGo three times |
+| mixed r/w (5 min, 3 workers) | 374 | 0 | heterogeneous, see below |
+| mixed r/w (10 min, 8 workers) | — | 0 | heaviest pressure applied |
+
+The **heterogeneous read/write mix** is the case that took the TinyGo board
+down. `scratchpad/mixed.py` interleaves the 365-record state view, 100-record
+ledger pages, account history, listing and quote-book reads against issue,
+transfer, listing+purchase and forex writes from concurrent workers, so the
+response buffer never sees the same shape twice running. Every operation type
+completed. Ledger stayed balanced throughout; the ring buffer wrapped
+(752 transactions, `retained_transactions` pinned at 365) without incident.
+
+## What the failures actually were
+
+No workload produced a 5xx. Every failure was one of two things, both correct
+behaviour:
+
+- **507 Insufficient Storage** — a bounded pool filled (48 listing slots,
+  16 quote slots) and the board refused cleanly while still serving reads.
+  Draining the slots restored full throughput: 48 consecutive purchases,
+  zero failures.
+- **"HTTP 0"** — no response at all. This is *not* a status code; it is the
+  harness's marker for a connection that produced nothing.
+
+The HTTP 0s are the **2-socket ceiling**, not instability. `max_open_sockets: 2`
+in `src/bin/esp32.rs:109`, ~24 KiB of handler stack each. Above two concurrent
+requests the lwIP accept backlog fills and further connections are refused at
+the TCP layer. A status code cannot be returned there: the connection is
+itself the exhausted resource, so there is nothing to send a 503 *on*.
+
+Measured ceiling, patient clients (30 s connect / 60 s read):
+
+| Burst | Completed | Refused |
+|---|---|---|
+| 10 | 6 | 4 |
+| 10 | 6 | 4 |
+| 20 | 12 | 8 |
+
+About 60% queue and complete — the last of a 20-burst took 19 s, exactly the
+serialisation you would predict behind two sockets. The other 40% never get a
+connection, and patience does not help them. Excess load is refused in
+milliseconds rather than hanging, so it degrades safely.
+
+**The socket limit is not what is keeping the board stable.** Under 20-way
+bursts the heap floor fell to 105,299 B — 54 KiB deeper than at rest — and
+recovered completely, with `largest` unmoved. It is throttling throughput,
+not concealing an allocator problem.
+
+### Raising it to 4 does not work (tested)
+
+Built and flashed an otherwise identical image with `max_open_sockets: 4` /
+`max_sessions: 4`. **It never finishes starting up.** The task watchdog fires
+~11 s in (`IDLE0` starved while `main` runs), then the service tears itself
+down and returns from `app_main` with `ESP_ERR_TIMEOUT`:
+
+```
+E (10956) task_wdt: Task watchdog got triggered... - IDLE0 (CPU 0)
+E (10956) task_wdt: Tasks currently running: CPU 0: main
+Error: ESP_ERR_TIMEOUT (error code 263)
+```
+
+Four sessions need roughly 48 KiB more than two — 24 KiB of handler stack each
+plus mbedTLS in/out buffers (`CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384`) — and
+`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` reserves only 64 KiB of internal RAM.
+That allocation blocks the main task past the watchdog deadline. So the value
+is not an arbitrary throttle: **2 is near the real ceiling for this TLS
+configuration.** Going higher needs smaller mbedTLS content buffers, a smaller
+handler stack, or more reserved internal RAM — not just a larger number.
+
+The 2-socket image was reflashed and the board recovered, with all 1,036
+transactions intact across the reflash and both reboots.
+
+## Harness changes required
+
+`nanacoin_load` targeted the Go board and needed three fixes to reach this one:
+
+- **TLS**: board is HTTPS-only. Added `NANA_CA` (`0` disables verification)
+  wired into `client.py`, `cli.py` and `workload.py`.
+- **Monitor endpoint**: the Rust firmware has **no `/api/v1/diag`**, so the
+  monitor's three-failed-probe guard stopped every run before it started.
+  Added `NANA_MONITOR_PATH`, pointed at public `/api/v1/status`, and made
+  `uptime_seconds` optional (falling back to the ledger invariant).
+- **Seed bug**: `seed` read `buyer["account"]`; the fixture stores
+  `buyer["user"]["account"]`. Pre-existing — the scenario had never run past
+  its first call. Also capped the `market` description to 96 bytes.
+
+In Git Bash, export `MSYS_NO_PATHCONV=1` or `NANA_MONITOR_PATH` is rewritten
+to a Windows path.
+
+## Gaps in the Rust firmware
+
+Real parity gaps, not load failures:
+
+1. **No `/api/v1/diag`.** The Go board had it; the harness depends on it for
+   uptime, heap and reboot detection. `status` reports `diag_enabled: false`
+   and there is no route behind it. Heap is only observable over serial,
+   which means a board that is not physically attached cannot be monitored.
+2. **No `X-Nanacoin-Health` response header.** The harness reads free heap,
+   in-use bytes and GC count from it for per-response samples at no extra
+   traffic cost. Nothing is emitted, so `health` is empty on every request
+   and the report's heap plots are blank.
+3. **96-byte description limit** vs 200 accepted by the Go board. Correctly
+   rejected with 400, but it is a client-visible difference.
+
+(1) and (2) are the ones worth closing — without them the only memory
+evidence is a serial cable.

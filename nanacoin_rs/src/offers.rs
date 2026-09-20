@@ -234,6 +234,8 @@ impl State {
                     reverses: None,
                     reversed: false,
                     listing: Some(l.id),
+                    usd: false,
+                    quote: None,
                 };
                 let listing_id = l.id;
                 let o = self.offers.iter_mut().find(|o| o.id == *offer).unwrap();
@@ -249,6 +251,7 @@ impl State {
                     .iter_mut()
                     .find(|l| l.id == listing_id)
                     .unwrap();
+                listing.updated_at = now;
                 listing.status = ListingStatus::Sold;
                 listing.buyer = Some(payer);
                 listing.sold_tx = Some(event.sequence);
@@ -268,6 +271,8 @@ impl State {
                     reverses: Some(s.transaction),
                     reversed: false,
                     listing: Some(o.listing),
+                    usd: false,
+                    quote: None,
                 };
                 let listing_id = o.listing;
                 if let Some(original) = self.history.iter_mut().find(|t| t.id == s.transaction) {
@@ -279,6 +284,7 @@ impl State {
                     .iter_mut()
                     .find(|l| l.id == listing_id)
                     .unwrap();
+                listing.updated_at = now;
                 listing.status = ListingStatus::Active;
                 listing.buyer = None;
                 listing.sold_tx = None;

@@ -46,6 +46,35 @@ func BenchmarkPerRequestAllocation(b *testing.B) {
 		}
 	}
 
+	// Give the exchange book something to render, and give both sides
+	// dollars so a take can actually settle. An empty book measures nothing:
+	// the sort in EachQuote is over live entries, so the cost only appears
+	// once there are rows to order.
+	{
+		for _, who := range []string{aliceAcct, bobAcct} {
+			ib, _ := json.Marshal(issueUSDRequest{To: acct(who), Cents: 100_000, Reason: "float"})
+			ir := httptest.NewRequest("POST", "/api/v1/admin/issue-usd", bytes.NewReader(ib))
+			ir.Header.Set("Authorization", "Bearer "+nana)
+			ir.Header.Set("Content-Type", "application/json")
+			ir.Header.Set("Idempotency-Key", "usd-"+who)
+			h.srv.ServeHTTP(httptest.NewRecorder(), ir)
+		}
+		// Both sides of the book, so the ordering work is real.
+		for i := 0; i < 8; i++ {
+			side, tok := "ASK", alice
+			if i%2 == 1 {
+				side, tok = "BID", bob
+			}
+			qb, _ := json.Marshal(quoteRequest{
+				Side: side, CentsPerCoin: int64(20 + i), Coins: 1,
+			})
+			qr := httptest.NewRequest("POST", "/api/v1/quotes", bytes.NewReader(qb))
+			qr.Header.Set("Authorization", "Bearer "+tok)
+			qr.Header.Set("Content-Type", "application/json")
+			h.srv.ServeHTTP(httptest.NewRecorder(), qr)
+		}
+	}
+
 	// Give history something to render.
 	for i := 0; i < 20; i++ {
 		body, _ := json.Marshal(transferRequest{To: acct(bobAcct), Amount: 1, Memo: "chore"})
@@ -71,6 +100,7 @@ func BenchmarkPerRequestAllocation(b *testing.B) {
 		{"ledger-50", "GET", "/api/v1/transactions?limit=50", nana, nil},
 		{"logs", "GET", "/api/v1/logs?limit=50", "", nil},
 		{"offers", "GET", "/api/v1/offers", alice, nil},
+		{"quotes", "GET", "/api/v1/quotes", alice, nil},
 	}
 
 	for _, tc := range cases {
@@ -116,6 +146,7 @@ func TestResponseSizes(t *testing.T) {
 		{"history-50", "/api/v1/accounts/" + aliceAcct + "/transactions?limit=50", alice},
 		{"ledger-50", "/api/v1/transactions?limit=50", nana},
 		{"logs-50", "/api/v1/logs?limit=50", ""},
+		{"quotes", "/api/v1/quotes", alice},
 	} {
 		w := h.do("GET", tc.path, tc.token, nil)
 		t.Logf("%-12s %d bytes (status %d)", tc.name, w.Body.Len(), w.Code)

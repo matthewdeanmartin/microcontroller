@@ -30,12 +30,8 @@ PORT = 80
 # Advertised over mDNS, so the site is at http://nanacoin.local regardless of
 # what IP DHCP hands out.
 #
-# Worth noting because the other board cannot do this: NanaCoin's firmware is
-# TinyGo on espradio, which ships no mDNS responder, so the S3 is reachable by
-# IP only. MicroPython's network stack has one. The site therefore gets a name
-# and the API does not, which is exactly backwards from what you would want -
-# and is why the client remembers the API address rather than asking for it
-# every time.
+# The TinyGo S3 API uses nanacoin-api.local; keep these names distinct when
+# both boards are on the same LAN.
 HOSTNAME = "nanacoin"
 
 CONNECT_TIMEOUT_S = 30

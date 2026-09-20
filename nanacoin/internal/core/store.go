@@ -352,7 +352,7 @@ func (s *store) findListing(id ledger.ListingID) int {
 	want := string(id)
 	for i := range s.listingsArr {
 		p := &s.listingsArr[i]
-		if p.InUse && s.arena.Get(p.ID) == want {
+		if p.InUse && s.arena.Equal(p.ID, want) {
 			return i
 		}
 	}

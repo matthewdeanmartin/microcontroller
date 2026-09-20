@@ -184,10 +184,20 @@ func (b *Book) Balance(acct AccountID) Amount {
 // the right one rather than filtering postings. That keeps a balance a fold
 // over one account, which is what the whole balance cache assumes.
 func (b *Book) BalanceIn(acct AccountID, c Currency) Amount {
-	if c == USD {
-		return b.Balance(USDAccount(acct))
+	if c != USD {
+		return b.Balance(acct)
 	}
-	return b.Balance(acct)
+	// The dollar wallet's name is derived, not stored, so resolving it via
+	// Balance would concatenate a string - one heap allocation per call, on a
+	// path that runs for every user in every household listing. Built in a
+	// stack buffer instead and looked up as bytes.
+	if len(acct)+len(USDSuffix) > MaxAccountIDLen {
+		return 0
+	}
+	var buf [MaxAccountIDLen]byte
+	n := copy(buf[:], acct)
+	n += copy(buf[n:], USDSuffix)
+	return b.balanceOf(b.strs.FindBytes(buf[:n]))
 }
 
 // Circulation is the total NanaCoin in existence: the negation of the issuance

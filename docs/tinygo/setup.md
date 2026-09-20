@@ -73,9 +73,10 @@ and password and embeds them in the firmware:
 reads `wifi.local.json`. Keep that file and credential-bearing firmware out of
 published artifacts. Command-line passwords can also remain in shell history.
 
-Use the DHCP address printed by the board. There is no `nanacoin.local` mDNS
-service in this stack. A DHCP reservation is useful for repeated tests, but
-do not assume the example address `192.168.1.158` is yours.
+Use `http://nanacoin-api.local` on the same LAN, or the DHCP address printed by
+the board if your client/network does not support mDNS. The separate MicroPython
+web board keeps `nanacoin.local`. Do not assume the example address
+`192.168.1.158` is yours.
 
 For the first bring-up, place the board near the router. Once it works there,
 move it to a difficult location deliberately and measure network resilience

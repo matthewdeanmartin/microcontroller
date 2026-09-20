@@ -181,29 +181,40 @@ func (s *Service) TakeQuote(
 	}
 
 	coinsFrom, coinsTo, centsFrom, centsTo := q.Pays(actor.Account)
-	for _, acct := range []ledger.AccountID{coinsFrom, coinsTo, centsFrom, centsTo} {
-		if err := s.checkUserAccountLocked(acct); err != nil {
+	// A stack array, not a slice literal: ranging over []ledger.AccountID{...}
+	// put a four-element slice on the heap on every take.
+	accts := [4]ledger.AccountID{coinsFrom, coinsTo, centsFrom, centsTo}
+	for i := range accts {
+		if err := s.checkUserAccountLocked(accts[i]); err != nil {
 			return nil, nil, nil, fmt.Errorf("account unavailable: %w", err)
 		}
 	}
+
+	// Both legs are built in caller-supplied scratch - the same pre-allocated
+	// buffer every other write endpoint uses. Written as locals with slice
+	// literals for their postings, they escaped to the heap: four objects per
+	// trade, on the board's most allocation-sensitive path.
+	out := writeResult(scratch)
+	coin, cash := &out.Transaction, &out.Second
 
 	// Build both legs before committing either. The coin leg takes the next
 	// sequence number and the cash leg the one after, which is also the order
 	// they are appended in.
 	coinSeq := s.book.NextID()
-	coin := ledger.Transaction{
+	*coin = ledger.Transaction{
 		ID:          coinSeq,
 		Kind:        ledger.KindTransfer,
 		CreatedAt:   now,
 		Actor:       actor.ID,
 		Description: "Exchange",
 		Reference:   string(q.ID),
-		Postings: []ledger.Posting{
-			{Account: coinsFrom, Amount: -q.Coins, Currency: ledger.NANA},
-			{Account: coinsTo, Amount: q.Coins, Currency: ledger.NANA},
-		},
+		Postings:    out.Postings[:],
 	}
-	if err := s.book.Validate(&coin, false); err != nil {
+	out.Postings = [ledger.MaxInlinePostings]ledger.Posting{
+		{Account: coinsFrom, Amount: -q.Coins, Currency: ledger.NANA},
+		{Account: coinsTo, Amount: q.Coins, Currency: ledger.NANA},
+	}
+	if err := s.book.Validate(coin, false); err != nil {
 		return nil, nil, nil, err
 	}
 
@@ -211,30 +222,37 @@ func (s *Service) TakeQuote(
 	// coin leg lands. Validate does not mutate, so checking it here is
 	// checking the same balances - the two legs touch different currencies,
 	// so the coin leg cannot change what the cash leg can afford.
-	cash := ledger.Transaction{
+	//
+	// A provisional ID for validation; the real one is taken after the coin
+	// leg has been appended and the sequence has moved.
+	*cash = ledger.Transaction{
+		ID:          coinSeq,
 		Kind:        ledger.KindTransfer,
 		CreatedAt:   now,
 		Actor:       actor.ID,
 		Description: "Exchange",
 		Reference:   string(q.ID),
-		Postings: []ledger.Posting{
-			// The dollar wallets, not the coin accounts: dollars live in a
-			// separate account so a balance stays a fold over one account.
-			{Account: ledger.USDAccount(centsFrom), Amount: -q.Cents(), Currency: ledger.USD},
-			{Account: ledger.USDAccount(centsTo), Amount: q.Cents(), Currency: ledger.USD},
-		},
+		Postings:    out.SecondPostings[:],
 	}
-	// A provisional ID for validation; the real one is taken after the coin
-	// leg has been appended and the sequence has moved.
-	cash.ID = coinSeq
-	if err := s.book.Validate(&cash, false); err != nil {
+	// The dollar wallets, not the coin accounts: dollars live in a separate
+	// account so a balance stays a fold over one account.
+	//
+	// These two USDAccount calls each allocate, and unlike the one in
+	// BalanceIn they cannot use a stack buffer: the name is stored in the
+	// posting and outlives this function. Two allocations per trade for names
+	// that get retained is the same price the coin accounts pay.
+	out.SecondPostings = [ledger.MaxInlinePostings]ledger.Posting{
+		{Account: ledger.USDAccount(centsFrom), Amount: -q.Cents(), Currency: ledger.USD},
+		{Account: ledger.USDAccount(centsTo), Amount: q.Cents(), Currency: ledger.USD},
+	}
+	if err := s.book.Validate(cash, false); err != nil {
 		return nil, nil, nil, err
 	}
 
 	ev := quoteTakenEvent{
 		QuoteID:   q.ID,
 		Taker:     actor.Account,
-		CoinTxn:   coin,
+		CoinTxn:   *coin,
 		UpdatedAt: now,
 	}
 	if err := s.commitEvent(storage.TypeQuoteTaken, &ev); err != nil {
@@ -243,7 +261,7 @@ func (s *Service) TakeQuote(
 
 	// The cash leg, now that the coin leg has a sequence number.
 	cash.ID = s.book.NextID()
-	if err := s.book.Validate(&cash, false); err != nil {
+	if err := s.book.Validate(cash, false); err != nil {
 		// The coin leg is already committed. Report it rather than pretending
 		// the trade did not happen: the quote records CoinTx with no CashTx,
 		// which is exactly what a half-landed trade looks like.
@@ -251,7 +269,7 @@ func (s *Service) TakeQuote(
 	}
 	cashEv := quoteSettledEvent{
 		QuoteID:   q.ID,
-		CashTxn:   cash,
+		CashTxn:   *cash,
 		UpdatedAt: now,
 	}
 	if err := s.commitEvent(storage.TypeQuoteSettled, &cashEv); err != nil {
@@ -262,7 +280,7 @@ func (s *Service) TakeQuote(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return updated, &coin, &cash, nil
+	return updated, coin, cash, nil
 }
 
 // CancelQuote withdraws a standing rate. The maker's, or Nana's.

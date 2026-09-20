@@ -42,7 +42,8 @@ def main():
             assert 'application/json' in response.headers['Content-Type']
             if origin == 'http://localhost:4200':
                 assert response.headers['Access-Control-Allow-Origin'] == origin
-            return response.status, json.loads(response.read())
+            data = response.read()
+            return response.status, json.loads(data) if data else None
 
     def login(username, password):
         verifier = secrets.token_urlsafe(32)
@@ -89,22 +90,22 @@ def main():
             assert request('/me', method='OPTIONS')[0] == 200
             assert request('/status', origin='https://not-allowed.example')[0] == 403
             provision = dict(household_name='Home', username='nana', display_name='Nana', password='1234')
-            assert request('/provision', provision)[0] == 200
+            assert request('/provision', provision)[0] == 201
             assert request('/provision', provision)[0] == 403
             nana = login('nana', '1234')
-            assert request('/users', dict(username='alice', display_name='Alice', password='5678', grant=False), nana)[0] == 200
+            assert request('/users', dict(username='alice', display_name='Alice', password='5678', grant=False), nana)[0] == 201
             alice = login('alice', '5678')
             issue = dict(to='account-2', amount=25, reason='Cookies 🍪')
             first = request('/admin/issue', issue, nana, 'issue-one')
-            assert first[0] == 200, first
+            assert first[0] == 201, first
             assert request('/admin/issue', issue, nana, 'issue-one') == first
             assert request('/admin/issue', issue, alice, 'forbidden')[0] == 403
-            assert request('/transfers', dict(to='account-1', amount=5, memo='Thanks'), alice, 'transfer-one')[0] == 200
+            assert request('/transfers', dict(to='account-1', amount=5, memo='Thanks'), alice, 'transfer-one')[0] == 201
             assert request('/me', token=alice)[1]['balance'] == 20
             assert len(request('/users', token=nana)[1]['users']) == 2
             assert request('/listings', token=nana)[1]['listings'] == []
             result = request('/listings', dict(title='Chore', description='Wash dishes', price=3, side='SELL'), nana)
-            assert result[0] == 200, result
+            assert result[0] == 201, result
             listing = result[1]['id']
             result = request('/listings/' + listing, {'description':'Dry dishes', 'price':2}, nana, method='PATCH')
             assert result[0] == 200 and result[1]['description'] == 'Dry dishes', result
@@ -130,8 +131,20 @@ def main():
             assert request('/me', token=alice)[0] == 401
             assert request('/users/user-2', {'status':'ACTIVE'}, nana, method='PATCH')[0] == 200
             alice = login('alice', '5678')
+            assert request('/accounts/account-1', token=alice)[0] == 403
+            assert request('/transactions', token=alice)[0] == 403
+            assert request('/state', token=alice)[0] == 403
+            assert request('/admin/issue-usd', dict(to='account-1', cents=500, reason='Cash reserve'), nana, 'usd-one')[0] == 201
+            quote = request('/quotes', dict(side='ASK', cents_per_coin=25, coins=1), alice)
+            assert quote[0] == 201, quote
+            quote_path = '/quotes/' + quote[1]['id']
+            trade = request(quote_path + '/take', {}, nana, 'trade-one')
+            assert trade[0] == 201 and trade[1]['quote']['status'] == 'FILLED', trade
+            assert request('/accounts/account-2-usd', token=alice)[1]['balance'] == 25
+            assert request('/me', token=alice)[1]['balance'] == 19
+            assert request(quote_path, token=alice)[1]['cash_tx'] == trade[1]['cash_transaction']['id']
             assert request('/commands', {'junk':'x' * 1100}, nana)[0] == 413
-            assert request('/auth/logout', {}, nana)[0] == 200
+            assert request('/auth/logout', {}, nana)[0] == 204
             assert request('/me', token=nana)[0] == 401
         finally:
             stop(process)
@@ -140,10 +153,11 @@ def main():
             assert request('/me', token=alice)[0] == 401
             nana = login('nana', '1234')
             alice = login('alice', '5678')
-            assert request('/me', token=alice)[1]['balance'] == 20
+            assert request('/me', token=alice)[1]['balance'] == 19
             assert request('/admin/issue', issue, nana, 'issue-one') == first
+            assert request(quote_path + '/take', {}, nana, 'trade-one') == trade
             status, ledger = request('/transactions', token=nana)
-            assert status == 200 and len(ledger['transactions']) == 4
+            assert status == 200 and len(ledger['transactions']) == 7
             assert request(offer_path + '/accept', {}, nana, 'accept-offer') == accepted
             assert request(offer_path + '/unaccept', {'reason': 'Not delivered'}, alice, 'undo-offer') == undone
             assert all('password' not in json.dumps(user) for user in request('/users', token=nana)[1]['users'])
@@ -174,7 +188,7 @@ def main():
             assert request('/me', token=login('nana', '4321'))[1]['balance'] == 25
         finally:
             stop(process)
-    print('HTTP smoke passed: JSON-only, Angular auth/views/money/offers, 1000 offer reads, CORS, revocation, restart, durable retries')
+    print('HTTP smoke passed: JSON-only, Angular auth/views/money/offers/forex/privacy, 1000 offer reads, CORS, revocation, restart, durable retries')
 
 
 if __name__ == '__main__':

@@ -137,6 +137,30 @@ func (a *Arena) Bytes(s Slot) []byte {
 	}
 	return a.buf[s.Off:end]
 }
+// Equal reports whether a slot holds exactly this text, without building a
+// string for it.
+//
+// Get allocates a copy on every call, which is invisible when rendering one
+// record and expensive when scanning: the find-by-ID helpers compare a slot
+// against a wanted ID for every occupied slot in the table, so a lookup over
+// 16 quotes allocated 16 strings to return one index. Comparing a byte slice
+// to a string is a direct comparison the compiler does not allocate for.
+func (a *Arena) Equal(s Slot, want string) bool {
+	if int(s.Len) != len(want) {
+		return false
+	}
+	if s.Len == 0 {
+		return true
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	end := int(s.Off) + int(s.Len)
+	if end > len(a.buf) {
+		return false
+	}
+	return string(a.buf[s.Off:end]) == want
+}
+
 func (a *Arena) Stats() (used, capacity, truncated int) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

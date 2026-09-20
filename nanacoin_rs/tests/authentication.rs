@@ -54,7 +54,7 @@ fn provisions_once_and_uses_the_existing_angular_login_shapes() {
     assert_eq!(get(&mut s, "", "/api/v1/status").1["provisioned"], false);
     let body = json!({"household_name":"Home", "username":"nana", "display_name":"Nana", "password":"1234"});
     let (status, user) = common::call(&mut s, "/api/v1/provision", "", body.clone());
-    assert_eq!(status, 200);
+    assert_eq!(status, 201);
     assert_eq!(user["id"], "user-1");
     assert_eq!(user["role"], "nana");
     assert_eq!(common::call(&mut s, "/api/v1/provision", "", body).0, 403);
@@ -216,7 +216,7 @@ fn logout_password_reset_and_disable_revoke_sessions_and_pending_codes() {
     let alice = common::login_as(&mut s, "alice", "5678");
     assert_eq!(
         common::call(&mut s, "/api/v1/auth/logout", &alice, json!({})).0,
-        200
+        204
     );
     assert_eq!(get(&mut s, &alice, "/api/v1/me").0, 401);
     let alice = common::login_as(&mut s, "alice", "5678");

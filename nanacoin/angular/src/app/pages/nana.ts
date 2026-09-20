@@ -168,7 +168,17 @@ export class NanaPage {
 
     await this.seeder.run(opts);
     await Promise.all([this.session.refresh(), this.loadLedger()]);
-    if (!this.seeder.lastError()) this.toasts.ok('A year of history added.');
+
+    const failure = this.seeder.lastError();
+    if (!failure) {
+      this.toasts.ok('A year of history added.');
+      return;
+    }
+    // A failed seed used to say so only in text inside this panel - which
+    // collapses when the page re-renders, so the run appeared to stop for no
+    // reason and with nothing on screen. Say it where every other failure is
+    // said.
+    this.toasts.error(`Seeding stopped: ${failure}`);
   }
 
   /**

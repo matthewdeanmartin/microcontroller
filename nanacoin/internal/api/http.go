@@ -272,6 +272,15 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrRateLimited):
 		status, code = http.StatusTooManyRequests, "rate_limited"
 	case errors.Is(err, auth.ErrTooManySessions):
+		// A 503 without Retry-After, deliberately. The client retries a 503
+		// only when the header tells it how long to wait, and waiting does
+		// not help here: sessions free up on expiry, hours away, not in the
+		// second or two a backoff covers. Sending one would turn a clear
+		// refusal into three slow attempts ending the same way.
+		//
+		// Reaching this at all now means other users genuinely fill the
+		// table - a login as the same person recycles their own oldest
+		// session rather than adding to it. See newSessionLocked.
 		status, code = http.StatusServiceUnavailable, "too_many_sessions"
 	case errors.Is(err, auth.ErrNoSession):
 		status, code = http.StatusUnauthorized, "unauthorized"

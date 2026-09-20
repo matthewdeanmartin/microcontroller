@@ -216,23 +216,66 @@ func (s *Store) NewSession(userID ledger.UserID) (string, *Session, error) {
 	return s.newSessionLocked(userID)
 }
 
+// newSessionLocked takes a free or expired slot, and failing that evicts this
+// user's own oldest session.
+//
+// # Why eviction, and why only your own
+//
+// Sessions are RAM-only and last eight hours, and nothing ever logs out: the
+// switcher holds several accounts at once by design, and the demo seeder logs
+// in as every household member on each run. So the table fills with sessions
+// that are live, unexpired, and unreachable - nobody holds their tokens any
+// more - and the board then refuses every login for the rest of the day.
+//
+// That failed in a way nobody could diagnose. The refusal is a 503 on
+// /auth/authorize, but what the user sees is the *next* request failing with
+// "invalid or expired token", because the client has already dropped the
+// account it could not re-authenticate. The demo seeder would stop a few
+// minutes in reporting a dead token, with a full session table as the real
+// cause and nothing on screen pointing at it.
+//
+// Evicting the caller's own oldest session is the conservative form of the
+// fix: logging in again as yourself can cost you your stalest session, and
+// can never cost anyone else theirs. A browser holding one token per account
+// is unaffected - it has one session each - while a repeated login as the
+// same person recycles instead of accumulating. Only when *other* users fill
+// the table does this still refuse, which is a real capacity limit rather
+// than an accumulation of ghosts.
+//
 //go:noinline
 func (s *Store) newSessionLocked(userID ledger.UserID) (string, *Session, error) {
 	now := s.now()
+	free := -1
+	oldest, oldestAt := -1, int64(0)
 	for i := range s.sessions {
 		slot := &s.sessions[i]
-		if slot.used && now.UnixNano() < slot.expires {
+		if !slot.used || now.UnixNano() >= slot.expires {
+			if free < 0 {
+				free = i
+			}
 			continue
 		}
-		token, err := RandomToken(32)
-		if err != nil {
-			return "", nil, err
+		if slot.user == userID && (oldest < 0 || slot.created < oldestAt) {
+			oldest, oldestAt = i, slot.created
 		}
-		sess := Session{UserID: userID, CreatedAt: now, ExpiresAt: now.Add(s.tokenTTL)}
-		*slot = sessionSlot{key: hashString(token), user: userID, created: now.UnixNano(), expires: sess.ExpiresAt.UnixNano(), used: true}
-		return token, &sess, nil
 	}
-	return "", nil, ErrTooManySessions
+	if free < 0 {
+		// The table is full of live sessions. Reuse one of this user's own
+		// before refusing; never anyone else's.
+		free = oldest
+	}
+	if free < 0 {
+		return "", nil, ErrTooManySessions
+	}
+
+	token, err := RandomToken(32)
+	if err != nil {
+		return "", nil, err
+	}
+	slot := &s.sessions[free]
+	sess := Session{UserID: userID, CreatedAt: now, ExpiresAt: now.Add(s.tokenTTL)}
+	*slot = sessionSlot{key: hashString(token), user: userID, created: now.UnixNano(), expires: sess.ExpiresAt.UnixNano(), used: true}
+	return token, &sess, nil
 }
 
 // Lookup returns an independent copy. Request handlers use LookupInto to avoid

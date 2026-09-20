@@ -133,6 +133,19 @@ func (t *Strings) Find(s string) Ref {
 	return t.toID[s]
 }
 
+// FindBytes is Find for a name held in a buffer rather than a string.
+//
+// The compiler special-cases map[string(b)] so no string is built for the
+// lookup. That matters for the dollar wallets: their names are derived
+// ("account-x" -> "account-x-usd") rather than stored, so resolving one via
+// Find means concatenating - a heap allocation on a path that runs for every
+// user on every /me and every household listing.
+func (t *Strings) FindBytes(b []byte) Ref {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.toID[string(b)]
+}
+
 // LookupBytes returns an interned value's bytes without copying.
 //
 // Reads the parallel byte form built at intern time. Converting on demand

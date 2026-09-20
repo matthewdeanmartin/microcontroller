@@ -1,13 +1,15 @@
 use crate::auth::PasswordVerifier;
+use crate::forex::{Quote, QuoteSide, QUOTES};
 use crate::offers::{Offer, OfferId, OfferMessage, DEFAULT_SETTLEMENT, OFFERS};
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::VecDeque;
 use subtle::ConstantTimeEq;
 
 pub const MEMBERS: usize = 16;
-pub const LISTINGS: usize = 32;
-pub const HISTORY: usize = 64;
+pub const LISTINGS: usize = 48;
+pub const HISTORY: usize = 365;
 pub const MAX_AMOUNT: i64 = 1_000_000_000;
 pub const MAX_SEQUENCE: u64 = 9_007_199_254_740_991;
 pub type Name = String<40>;
@@ -100,6 +102,25 @@ pub enum Command {
         description: Memo,
         price: i64,
         side: Side,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        details: Option<ListingDetails>,
+    },
+    IssueUsd {
+        to: MemberId,
+        cents: i64,
+        memo: Memo,
+    },
+    PostQuote {
+        side: QuoteSide,
+        cents_per_coin: i64,
+        coins: i64,
+        expires_at: u64,
+    },
+    TakeQuote {
+        quote: u64,
+    },
+    CancelQuote {
+        quote: u64,
     },
     Cancel {
         listing: u64,
@@ -176,6 +197,8 @@ pub struct Member {
     #[serde(skip)]
     pub(crate) password: Option<PasswordVerifier>,
     pub balance: i64,
+    pub usd_cents: i64,
+    pub created_at: u64,
     pub last_request: u64,
     #[serde(skip)]
     token_hash: TokenHash,
@@ -183,6 +206,17 @@ pub struct Member {
     last_command: TokenHash,
     #[serde(skip)]
     last_sequence: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListingDetails {
+    #[serde(default)]
+    pub kind: String<16>,
+    #[serde(default)]
+    pub currency: String<8>,
+    #[serde(default)]
+    pub minor_units: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -196,6 +230,9 @@ pub struct Listing {
     pub status: ListingStatus,
     pub buyer: Option<MemberId>,
     pub sold_tx: Option<u64>,
+    pub details: ListingDetails,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -211,6 +248,8 @@ pub struct Transaction {
     pub reverses: Option<u64>,
     pub reversed: bool,
     pub listing: Option<u64>,
+    pub usd: bool,
+    pub quote: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,11 +263,14 @@ pub struct State {
     #[serde(skip)]
     pub(crate) last_timestamp: u64,
     pub sequence: u64,
+    pub transactions: u64,
     pub issuance_balance: i64,
+    pub usd_issuance_balance: i64,
+    pub quotes: Vec<Quote, QUOTES>,
     pub members: Vec<Member, MEMBERS>,
     pub listings: Vec<Listing, LISTINGS>,
     /// Oldest first. Eviction never discards balances or retry watermarks.
-    pub history: Vec<Transaction, HISTORY>,
+    pub history: VecDeque<Transaction>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -269,10 +311,13 @@ impl Default for State {
             offers: Vec::new(),
             last_timestamp: 0,
             sequence: 0,
+            transactions: 0,
             issuance_balance: 0,
+            usd_issuance_balance: 0,
+            quotes: Vec::new(),
             members: Vec::new(),
             listings: Vec::new(),
-            history: Vec::new(),
+            history: VecDeque::with_capacity(HISTORY),
         }
     }
 }
@@ -334,7 +379,11 @@ impl State {
             if id == MemberId(0) {
                 Ok(self.issuance_balance)
             } else {
-                self.member(id).map(|m| m.balance)
+                let member = self.member(id)?;
+                if !correction && member.disabled {
+                    return Err(Error::Disabled);
+                }
+                Ok(member.balance)
             }
         };
         let debit = balance(from)?.checked_sub(amount).ok_or(Error::Overflow)?;
@@ -502,7 +551,21 @@ impl State {
                 self.member(*to)?;
                 self.posting(actor, *to, *amount)?;
             }
-            Command::List { title, price, .. } => {
+            Command::List {
+                title,
+                price,
+                details,
+                ..
+            } => {
+                if let Some(d) = details {
+                    if !["", "item", "service", "currency"].contains(&d.kind.as_str())
+                        || d.currency.chars().any(char::is_control)
+                        || d.minor_units.unsigned_abs() > MAX_SEQUENCE
+                        || (d.kind == "currency" && (d.currency.is_empty() || d.minor_units <= 0))
+                    {
+                        return Err(Error::InvalidInput);
+                    }
+                }
                 if title.trim().is_empty() || !(1..=MAX_AMOUNT).contains(price) {
                     return Err(Error::InvalidInput);
                 }
@@ -564,8 +627,12 @@ impl State {
                 if tx.reversed || tx.reverses.is_some() {
                     return Err(Error::Conflict);
                 }
-                self.validate_posting(tx.to, tx.from, tx.amount, true)?;
+                self.validate_currency_posting(tx.to, tx.from, tx.amount, true, tx.usd)?;
             }
+            Command::IssueUsd { .. }
+            | Command::PostQuote { .. }
+            | Command::TakeQuote { .. }
+            | Command::CancelQuote { .. } => self.validate_forex(actor, command, now)?,
             Command::MakeOffer { .. }
             | Command::AcceptOffer { .. }
             | Command::UnacceptOffer { .. }
@@ -652,6 +719,7 @@ impl State {
     pub(crate) fn apply(&mut self, event: &Event) {
         let actor = event.actor;
         let mut posting = None;
+        let mut usd = false;
         match &event.command {
             Command::Provision {
                 household_name,
@@ -660,7 +728,13 @@ impl State {
                 password,
             } => {
                 self.household_name = household_name.clone();
-                self.add_password_member(username, display_name, password, Role::Nana);
+                self.add_password_member(
+                    username,
+                    display_name,
+                    password,
+                    Role::Nana,
+                    event.timestamp,
+                );
             }
             Command::CreateMember {
                 username,
@@ -669,7 +743,7 @@ impl State {
                 role,
                 grant,
             } => {
-                self.add_password_member(username, display_name, password, *role);
+                self.add_password_member(username, display_name, password, *role, event.timestamp);
                 if *grant > 0 {
                     posting = Some((
                         MemberId(0),
@@ -748,6 +822,8 @@ impl State {
                         disabled: false,
                         password: None,
                         balance: 0,
+                        usd_cents: 0,
+                        created_at: event.timestamp,
                         last_request: 0,
                         token_hash: *token_hash,
                         last_command: [0; 32],
@@ -769,6 +845,7 @@ impl State {
                 description,
                 price,
                 side,
+                details,
             } => {
                 if self.listings.is_full() {
                     let i = self
@@ -789,15 +866,16 @@ impl State {
                         status: ListingStatus::Active,
                         buyer: None,
                         sold_tx: None,
+                        details: details.clone().unwrap_or_default(),
+                        created_at: event.timestamp,
+                        updated_at: event.timestamp,
                     })
                     .unwrap();
             }
             Command::Cancel { listing } => {
-                self.listings
-                    .iter_mut()
-                    .find(|l| l.id == *listing)
-                    .unwrap()
-                    .status = ListingStatus::Cancelled
+                let l = self.listings.iter_mut().find(|l| l.id == *listing).unwrap();
+                l.status = ListingStatus::Cancelled;
+                l.updated_at = event.timestamp;
             }
             Command::UpdateListing {
                 listing,
@@ -806,6 +884,7 @@ impl State {
                 price,
             } => {
                 let l = self.listings.iter_mut().find(|l| l.id == *listing).unwrap();
+                l.updated_at = event.timestamp;
                 if let Some(title) = title {
                     l.title = title.clone();
                 }
@@ -819,6 +898,7 @@ impl State {
             Command::Buy { listing } => {
                 let l = self.listings.iter_mut().find(|l| l.id == *listing).unwrap();
                 l.status = ListingStatus::Sold;
+                l.updated_at = event.timestamp;
                 let (from, to) = match l.side {
                     Side::Sell => (actor, l.owner),
                     Side::Buy => (l.owner, actor),
@@ -841,6 +921,7 @@ impl State {
                     .find(|t| t.id == *transaction)
                     .unwrap();
                 tx.reversed = true;
+                usd = tx.usd;
                 posting = Some((
                     tx.to,
                     tx.from,
@@ -851,6 +932,10 @@ impl State {
                 ));
                 self.mark_offer_reversed(*transaction, event.timestamp);
             }
+            Command::IssueUsd { .. }
+            | Command::PostQuote { .. }
+            | Command::TakeQuote { .. }
+            | Command::CancelQuote { .. } => self.apply_forex(event),
             Command::MakeOffer { .. }
             | Command::AcceptOffer { .. }
             | Command::UnacceptOffer { .. }
@@ -869,6 +954,8 @@ impl State {
                 reverses,
                 reversed: false,
                 listing,
+                usd,
+                quote: None,
             });
         }
         self.last_timestamp = event.timestamp;
@@ -880,21 +967,27 @@ impl State {
     }
 
     pub(crate) fn record_transaction(&mut self, tx: Transaction) {
+        self.transactions += 1;
         for (id, delta) in [(tx.from, -tx.amount), (tx.to, tx.amount)] {
             if id == MemberId(0) {
-                self.issuance_balance += delta;
+                if tx.usd {
+                    self.usd_issuance_balance += delta;
+                } else {
+                    self.issuance_balance += delta;
+                }
             } else {
-                self.members
-                    .iter_mut()
-                    .find(|m| m.id == id)
-                    .unwrap()
-                    .balance += delta;
+                let member = self.members.iter_mut().find(|m| m.id == id).unwrap();
+                if tx.usd {
+                    member.usd_cents += delta;
+                } else {
+                    member.balance += delta;
+                }
             }
         }
-        if self.history.is_full() {
-            self.history.remove(0);
+        if self.history.len() == HISTORY {
+            self.history.pop_front();
         }
-        self.history.push(tx).unwrap();
+        self.history.push_back(tx);
     }
 
     pub fn check_invariants(&self) -> Result<(), Error> {
@@ -908,7 +1001,17 @@ impl State {
                     sum.checked_add(m.balance)
                 }
             });
-        if sum == Some(0) {
+        let usd_sum = self
+            .members
+            .iter()
+            .try_fold(self.usd_issuance_balance, |sum, m| {
+                if m.usd_cents.unsigned_abs() > MAX_SEQUENCE {
+                    None
+                } else {
+                    sum.checked_add(m.usd_cents)
+                }
+            });
+        if sum == Some(0) && usd_sum == Some(0) {
             Ok(())
         } else {
             Err(Error::CorruptJournal)
@@ -921,6 +1024,7 @@ impl State {
         display_name: &Name,
         password: &PasswordVerifier,
         role: Role,
+        created_at: u64,
     ) {
         let id = MemberId(self.members.len() as u8 + 1);
         self.members
@@ -933,6 +1037,8 @@ impl State {
                 password: Some(password.clone()),
                 token_hash: [0; 32],
                 balance: 0,
+                usd_cents: 0,
+                created_at,
                 last_request: 0,
                 last_command: [0; 32],
                 last_sequence: 0,

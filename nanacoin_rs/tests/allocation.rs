@@ -43,6 +43,92 @@ impl Journal for Preallocated {
 }
 
 #[test]
+fn forex_recycling_and_repeated_http_trades_do_not_allocate() {
+    use core::fmt::Write;
+    use nanacoin::{auth::PasswordVerifier, forex::QuoteSide};
+    let mut s = Service::open(Preallocated(Vec::with_capacity(2100))).unwrap();
+    common::provision(&mut s);
+    s.execute(
+        MemberId(1),
+        2,
+        Command::CreateMember {
+            username: Name::try_from("bob").unwrap(),
+            display_name: Name::try_from("Bob").unwrap(),
+            password: PasswordVerifier::hash("1234").unwrap(),
+            role: Role::User,
+            grant: 100,
+        },
+    )
+    .unwrap();
+    s.execute(
+        MemberId(1),
+        3,
+        Command::Issue {
+            to: MemberId(1),
+            amount: 100,
+            memo: Memo::new(),
+        },
+    )
+    .unwrap();
+    for (request, member) in [(4, 1), (5, 2)] {
+        s.execute(
+            MemberId(1),
+            request,
+            Command::IssueUsd {
+                to: MemberId(member),
+                cents: 1000,
+                memo: Memo::new(),
+            },
+        )
+        .unwrap();
+    }
+    let bob = common::login_as(&mut s, "bob", "1234");
+    let mut output = vec![0; api::RESPONSE_LIMIT];
+    COUNT.with(|c| c.set(0));
+    ENABLED.with(|e| e.set(true));
+    for i in 0..1000 {
+        let receipt = s
+            .execute(
+                MemberId(1),
+                6 + i,
+                Command::PostQuote {
+                    side: if i % 2 == 0 {
+                        QuoteSide::ASK
+                    } else {
+                        QuoteSide::BID
+                    },
+                    cents_per_coin: 25,
+                    coins: 1,
+                    expires_at: 0,
+                },
+            )
+            .unwrap();
+        let mut path = heapless::String::<80>::new();
+        write!(path, "/api/v1/quotes/quote-{}/take", receipt.sequence).unwrap();
+        assert_eq!(
+            api::handle_keyed(&mut s, "POST", &path, &bob, &path, b"{}", &mut output).0,
+            201
+        );
+        assert_eq!(
+            api::handle_keyed(&mut s, "POST", &path, &bob, &path, b"{}", &mut output).0,
+            201
+        );
+        assert_eq!(
+            api::handle(&mut s, "GET", "/api/v1/quotes", &bob, b"", &mut output).0,
+            200
+        );
+    }
+    ENABLED.with(|e| e.set(false));
+    assert_eq!(COUNT.with(Cell::get), 0);
+    assert_eq!(s.state().members[0].balance, 100);
+    assert_eq!(s.state().members[0].usd_cents, 1000);
+    assert_eq!(s.state().history.len(), HISTORY);
+    assert_eq!(s.state().transactions, 2004);
+    assert_eq!(s.state().quotes.len(), nanacoin::forex::QUOTES);
+    s.state().check_invariants().unwrap();
+}
+
+#[test]
 fn full_offer_table_and_repeated_offer_http_requests_do_not_allocate() {
     use nanacoin::{auth::PasswordVerifier, offers::*};
     let mut s = Service::open(Preallocated(Vec::with_capacity(200))).unwrap();
@@ -68,6 +154,7 @@ fn full_offer_table_and_repeated_offer_http_requests_do_not_allocate() {
                 description: Memo::new(),
                 price: 20,
                 side: Side::Sell,
+                details: None,
             },
         )
         .unwrap()
@@ -148,12 +235,12 @@ fn full_offer_table_and_repeated_offer_http_requests_do_not_allocate() {
 
 #[test]
 fn command_and_state_serialization_do_not_allocate_after_startup() {
-    let mut service = Service::open(Preallocated(Vec::with_capacity(200))).unwrap();
+    let mut service = Service::open(Preallocated(Vec::with_capacity(3001))).unwrap();
     common::provision(&mut service);
     let mut output = vec![0; api::RESPONSE_LIMIT];
     let auth = common::login(&mut service);
     ENABLED.with(|enabled| enabled.set(true));
-    for request_id in 2..130 {
+    for request_id in 2..3000 {
         service
             .execute(
                 MemberId(1),
@@ -176,7 +263,7 @@ fn command_and_state_serialization_do_not_allocate_after_startup() {
         assert_eq!(status, 200);
     }
     let body =
-        br#"{"request_id":130,"command":{"issue":{"to":1,"amount":1,"memo":"escaped\ntext"}}}"#;
+        br#"{"request_id":3000,"command":{"issue":{"to":1,"amount":1,"memo":"escaped\ntext"}}}"#;
     assert_eq!(
         api::handle(
             &mut service,
@@ -191,6 +278,9 @@ fn command_and_state_serialization_do_not_allocate_after_startup() {
     );
     ENABLED.with(|enabled| enabled.set(false));
     assert_eq!(COUNT.with(Cell::get), 0);
+    assert_eq!(service.state().history.len(), HISTORY);
+    assert_eq!(service.state().transactions, 2999);
+    assert_eq!(service.state().member(MemberId(1)).unwrap().balance, 2999);
     println!(
         "State storage: {} bytes; response scratch: {} bytes",
         std::mem::size_of::<State>(),

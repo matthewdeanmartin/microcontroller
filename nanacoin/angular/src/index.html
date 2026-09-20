@@ -7,15 +7,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 
     <!--
-      Where the API lives, for a static deployment. Leave the content empty to
-      use this page's own origin, which is what the `ng serve` proxy does in
-      development. Set it to the board, e.g. "http://192.168.1.158", when this
-      site is hosted somewhere else.
+      Default to the TinyGo board's mDNS name. A remembered server or ?api=
+      overrides this. Use ?api= with an empty value to select this page's
+      own origin (the `ng serve` proxy) for the current visit.
 
-      A ?api= query parameter overrides this and is remembered, which is the
-      quickest way to follow a board whose DHCP address has changed.
+      Leave the content empty to make same-origin the deployment default.
     -->
-    <meta name="nanacoin-api" content="" />
+    <meta name="nanacoin-api" content="http://nanacoin-api.local" />
 
     <link rel="icon" href="favicon.ico" />
   </head>

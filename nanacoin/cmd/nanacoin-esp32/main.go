@@ -34,6 +34,7 @@ import (
 	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/api"
 	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/auth"
 	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/boardhttp"
+	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/boardmdns"
 	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/core"
 	"github.com/matthewdeanmartin/microcontroller/nanacoin/internal/storage/memory"
 )
@@ -44,10 +45,9 @@ var (
 	password string
 )
 
-// hostname is what the board asks DHCP to register. Whether it becomes a
-// resolvable name depends entirely on the router; espradio ships no mDNS
-// responder, so there is no nanacoin.local unless something else provides it.
-const hostname = "nanacoin"
+// Keep DHCP and mDNS names consistent, and distinct from the MicroPython
+// static web board's nanacoin.local.
+const hostname = boardmdns.Hostname
 
 const (
 	listenPort = 80
@@ -547,6 +547,10 @@ func connectWiFi() (*espradio.Stack, netip.Addr) {
 		fail("DHCP returned an address that is not IPv4")
 	}
 	println("connected, address", addr.String())
+	if err := boardmdns.Register(stack.LnetoStack(), addr, listenPort); err != nil {
+		fail("starting mDNS: " + err.Error())
+	}
+	println("mDNS: http://" + boardmdns.LocalName)
 	return stack, addr
 }
 

@@ -12,7 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / ".state" / "fixture.json"
 REPORTS = ROOT / "reports"
 ORIGIN = os.getenv("NANA_ORIGIN", "http://localhost:4200")
-SCENARIOS = ("status", "browse", "ledger", "write", "replay", "market", "auth", "seed")
+# The Rust board serves HTTPS only, with the gitignored development
+# certificate. NANA_CA points at that certificate; "0" disables
+# verification entirely for a board whose cert does not match its name.
+CA = os.getenv("NANA_CA", "")
+VERIFY = False if CA == "0" else (CA or True)
+# No /api/v1/diag on the Rust firmware; status is public and carries
+# the ledger invariant. Heap comes from serial, not response headers.
+MONITOR_PATH = os.getenv("NANA_MONITOR_PATH", "/api/v1/diag")
+SCENARIOS = ("status", "browse", "ledger", "write", "replay", "market", "auth", "seed", "forex")
 
 
 def health(text):

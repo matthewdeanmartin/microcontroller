@@ -115,12 +115,26 @@ Then open the Angular site and give it that address. If the site cannot reach a
 NanaCoin it asks for one: type `192.168.1.158`, press Connect, and it is
 remembered. `?api=192.168.1.158` in the URL does the same thing in one step.
 
-**There is no `nanacoin.local`.** espradio ships no mDNS responder, and the
-`Hostname` it sends only reaches the DHCP request — which this router does not
-publish into DNS. The board is reachable by IP only, and that IP can change
-with the lease, which is what `?api=` is for. Getting a name would mean either
-writing an mDNS responder against the lneto stack, a DHCP reservation plus a
-router DNS entry, or a hosts-file entry on each device.
+The TinyGo API's base URL is **`http://nanacoin-api.local`** on the same LAN.
+After DHCP, `internal/boardmdns` registers lneto's mDNS responder and advertises
+HTTP on port 80. Enter `nanacoin-api.local` in the Angular client's Connect
+screen, or use `?api=nanacoin-api.local`. The separate MicroPython static web
+board keeps `nanacoin.local`, so the two names do not collide.
+The API can be checked at `http://nanacoin-api.local/api/v1/status`; its root
+path `/` does not serve the website. With both boards, open
+`http://nanacoin.local/?api=nanacoin-api.local`.
+
+The printed DHCP address remains a fallback on clients or networks that block
+mDNS. This is IPv4 discovery; the current responder does not automatically
+rename itself if a second TinyGo NanaCoin board claims the same name. It answers
+queries rather than sending unsolicited startup announcements. The address is
+set at boot after DHCP; any future live DHCP address-change support must also
+refresh the responder. A Wi-Fi reassociation currently retains the stack address.
+
+Verified on the ESP32-S3 on 2026-09-19: Windows name resolution and HTTP 200
+from `/api/v1/status`, plus direct multicast A, PTR and SRV replies. The host
+tests in `internal/boardmdns` exercise Ethernet/IP/UDP discovery, record contents,
+repeated queries, different assigned addresses and mDNS's IP TTL of 255.
 
 Two things about this board, both learned the hard way and both recorded in
 `../BOARD_SKILL_ESP32_S3_N16R8.md`:

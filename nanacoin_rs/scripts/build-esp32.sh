@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
-: "${NANACOIN_WIFI_SSID:?Set NANACOIN_WIFI_SSID}"
-: "${NANACOIN_WIFI_PASSWORD:?Set NANACOIN_WIFI_PASSWORD}"
+# Credentials may come from the environment or, failing that, from a
+# gitignored .env / config.py that build.rs discovers. Only fail here when
+# neither source can supply them.
+if [[ -z "${NANACOIN_WIFI_SSID:-}" || -z "${NANACOIN_WIFI_PASSWORD:-}" ]]; then
+  have_file=
+  for candidate in .env config.py ../nanacoin_web/config.py ../hello_wifi_s3_py/config.py ../hello_wifi_py/config.py; do
+    if [[ -f "$candidate" ]] && grep -qE '^[[:space:]]*(export[[:space:]]+)?(NANACOIN_)?WIFI_PASSWORD[[:space:]]*=' "$candidate"; then
+      have_file=$candidate; break
+    fi
+  done
+  if [[ -z "$have_file" ]]; then
+    echo 'Set NANACOIN_WIFI_SSID and NANACOIN_WIFI_PASSWORD, or put WIFI_SSID/WIFI_PASSWORD in a gitignored .env or config.py' >&2
+    exit 1
+  fi
+  echo "Wi-Fi credentials: $have_file (override by exporting NANACOIN_WIFI_*)"
+fi
 [[ -f certs/server.crt && -f certs/server.key ]] || { echo 'Run bash scripts/dev-certs.sh first' >&2; exit 1; }
 # Git Bash support for the existing official Windows ESP-IDF installation.
 # Elsewhere, source your ESP-IDF and espup export scripts before this script.

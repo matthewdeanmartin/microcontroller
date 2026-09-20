@@ -100,9 +100,14 @@ func (o *packedOffer) closed() bool {
 // --- store access, in the same shape as the listing helpers ---
 
 func (s *store) findOffer(id ledger.OfferID) int {
+	if id == "" {
+		return -1
+	}
+	// See findQuote: comparing in place rather than rehydrating each slot.
+	want := string(id)
 	for i := range s.offersArr {
 		p := &s.offersArr[i]
-		if p.InUse && s.arena.Get(p.ID) == string(id) {
+		if p.InUse && s.arena.Equal(p.ID, want) {
 			return i
 		}
 	}

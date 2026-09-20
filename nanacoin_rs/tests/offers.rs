@@ -81,6 +81,7 @@ fn listing(s: &mut House, side: Side) -> u64 {
             description: Memo::new(),
             price: 25,
             side,
+            details: None,
         },
     )
     .unwrap()
@@ -295,7 +296,7 @@ fn either_party_or_nana_can_undo_once_and_reopen_in_one_event() {
             assert_eq!((balance(&s, 2), balance(&s, 3)), (100, 100));
             assert_eq!(s.state().listings[0].status, ListingStatus::Active);
             assert_eq!(
-                s.state().history.last().unwrap().reverses,
+                s.state().history.back().unwrap().reverses,
                 Some(accepted.sequence)
             );
             assert_eq!(exec(&mut s, actor, undo(id)), Err(Error::OfferClosed));
@@ -481,6 +482,7 @@ fn reversible_listing_is_pinned_until_undo_deadline() {
         description: Memo::new(),
         price: 10,
         side: Side::Sell,
+        details: None,
     };
     assert_eq!(exec(&mut s, 2, command.clone()), Err(Error::Capacity));
     set_time(START + DEFAULT_SETTLEMENT);

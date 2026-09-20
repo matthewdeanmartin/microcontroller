@@ -12,7 +12,7 @@ import requests
 
 from . import report
 from .client import API
-from .common import REPORTS, ROOT, SCENARIOS, Evidence, load_fixture, new_run, write_json
+from .common import MONITOR_PATH, REPORTS, ROOT, SCENARIOS, VERIFY, Evidence, load_fixture, new_run, write_json
 from .journeys import e2e, prepare
 
 
@@ -35,8 +35,9 @@ def snapshot(host, evidence, label):
     # Fresh session avoids ambient proxy configuration and retains no auth material.
     session = requests.Session()
     session.trust_env = False
+    session.verify = VERIFY
     try:
-        r = session.get(host + "/api/v1/diag", timeout=(3, 5))
+        r = session.get(host + MONITOR_PATH, timeout=(3, 5))
         r.raise_for_status()
         data = r.json()
         evidence.emit("snapshot", role=label, data=data)

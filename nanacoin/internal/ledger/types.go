@@ -34,8 +34,18 @@ type (
 // second slot was for "a user to gain a second account later without a format
 // change". This is that.
 func USDAccount(coinAccount AccountID) AccountID {
-	return coinAccount + "-usd"
+	return coinAccount + USDSuffix
 }
+
+// USDSuffix is what USDAccount appends. Named so the allocation-free path in
+// BalanceIn can build the same name in a stack buffer without the two
+// spellings drifting apart.
+const USDSuffix = "-usd"
+
+// MaxAccountIDLen bounds an account name, so a derived one can be built on the
+// stack. Account IDs are "account-" plus a short generated tail; the dollar
+// wallets add USDSuffix on top of that.
+const MaxAccountIDLen = 64
 
 // USDIssuance is where dollars enter and leave the household, mirroring
 // SystemIssuance for coins.

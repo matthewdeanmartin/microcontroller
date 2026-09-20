@@ -6,3 +6,5 @@ pub mod domain;
 pub mod journal;
 mod json;
 pub mod offers;
+
+pub mod forex;

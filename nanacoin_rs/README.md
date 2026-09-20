@@ -32,7 +32,7 @@ Implemented client flows include provisioning/login/logout, status, members and 
 
 Negotiated offers support proposing, accepting, declining, withdrawing and undoing acceptance. Only the listing owner accepts, at the offered price; SELL charges the offerer and BUY charges the listing owner. Proposals need no funds, while acceptance does. Offers are private to the two parties and Nana. Undo is available to either party or Nana until the configured deadline (48 hours by default), creates a reversal even if the payee spent the money, and reopens the listing. Refund, status and reopening commit in one event. Acceptance details survive recent-history eviction, so an unexpired deal can still be undone.
 
-This is not complete Go feature parity. External-currency listings, loans, interest, diagnostic/log streaming and Go journal import are absent. Item/service distinctions are not retained. Offers and new transactions have persisted Unix timestamps; older events and the member/listing creation views report zero. Recent transactions are limited to 64. Direct purchases still pay immediately. Nana's manual reversal requires a retained transaction, permits correction overdrafts, and does not reopen listings; reversing an offer's payment prevents a second refund through unaccept.
+The September 19 parity pass adds USD wallets, a bounded forex quote book, external-currency listing metadata, account/listing reads, balance/ledger privacy, and member/listing timestamps. Recent transactions retain 365 records in a preallocated ring; HTTP ledger pages cap at 100. Old timestamp-less Rust events still report zero. Diagnostic/log streaming and Go journal import remain absent. Loans and interest are not implemented by either current server. See [PARITY.md](PARITY.md) for remaining differences. Direct purchases still pay immediately. Nana's manual reversal requires a retained transaction, permits correction overdrafts, and does not reopen listings; reversing an offer's payment prevents a second refund through unaccept.
 
 Settlement deadlines use server wall time, never browser time or uptime. Firmware starts SNTP after Wi-Fi; optionally set `NANACOIN_NTP_SERVER` at build time for a reachable LAN time server. Until the clock is valid, timed offer mutations return 503 and offers are not advertised as reversible. A clock behind the last durable event also blocks timed mutations. Deadlines and the configuration survive replay; changing the window applies only to future acceptances.
 
@@ -53,7 +53,12 @@ export NANACOIN_WIFI_PASSWORD='Your Wi-Fi password'
 make firmware
 ```
 
-Wi-Fi credentials and ignored `certs/server.crt` / `certs/server.key` are embedded during compilation. There is no embedded household password or admin token. Treat binaries and build caches as secrets. The build does not flash, reset, probe or open serial connections. **The plugged-in board is reserved for the Go developer; deployment is deferred.**
+Wi-Fi credentials come from `NANACOIN_WIFI_SSID` / `NANACOIN_WIFI_PASSWORD` when
+those are exported. Otherwise `build.rs` reads the first gitignored `.env` or
+`config.py` that defines `WIFI_SSID` / `WIFI_PASSWORD` (this crate first, then
+`nanacoin_web`, then the MicroPython projects), so `make firmware` works with no
+environment setup. The build prints which file it used, never the value, and the
+environment always wins. Wi-Fi credentials and ignored `certs/server.crt` / `certs/server.key` are embedded during compilation. There is no embedded household password or admin token. Treat binaries and build caches as secrets. The build does not flash, reset, probe or open serial connections. **This pass builds only; flashing waits until the owner connects the board.**
 
 The intended board API address is `https://nanacoin-rs.local/api/v1/status`. mDNS uses local multicast, rather than requiring a router-assigned name. Clients need mDNS support and multicast reachability. Trust the development certificate or supply a trusted LAN certificate matching this hostname. No plaintext HTTP fallback runs on the board. The client stays on its own host with its origin allowed by CORS. Certificate renewal is manual.
 
@@ -63,25 +68,30 @@ Rust does not automatically prevent fragmentation. Application collections have 
 
 | Resource | Limit |
 |---|---|
-| Members / listing slots / recent transactions | 16 / 32 / 64 |
+| Members / listing slots / recent transactions | 16 / 48 / 365 |
+| Forex quotes | 16; recycle closed/expired quotes, never live quotes |
 | Offer slots / offer message and undo reason | 32 / 140 UTF-8 bytes |
 | Names / titles / descriptions and memos | 40 / 80 / 96 UTF-8 bytes |
-| Request body / reused response buffer | 1 KiB / 128 KiB |
+| Request body / reused response buffer | 1 KiB / 512 KiB |
 | Sessions / pending login codes | 64 / 16 |
 | Journal | 4,096 fixed 1,024-byte records |
 | Durable HTTP retry index | 4,096 entries allocated once; 192 KiB on 64-bit host |
-| HTTPS sockets / handler stack | 2 / 16 KiB |
+| HTTPS sockets / handler stack | 4 / 24 KiB |
 | Startup stack | 64 KiB |
 | Movement amount | 1 through 1,000,000,000 whole coins |
 
-The allocation test observes zero allocations in its steady-state domain/JSON path. TLS, HTTP headers, Wi-Fi and NVS still allocate. PSRAM and PSRAM-backed NVS cache are enabled, with 64 KiB reserved for internal-RAM allocations. Heap metrics include largest free block. Runtime OOM resilience requires hardware measurement.
+Allocation tests observe zero allocations after startup across 2,999 financial writes with state reads, and across 1,000 forex trades with retries and quote reads. The larger response buffer is allocated once for the 365-record state view and worst-case JSON escaping; it does not grow per request. The history backing storage also allocates once and overwrites oldest records without shifting the full history. TLS, HTTP headers, Wi-Fi and NVS still allocate. PSRAM and PSRAM-backed NVS cache are enabled, with 64 KiB reserved for internal-RAM allocations. Heap metrics include largest free block. Runtime OOM resilience requires hardware measurement.
 
 Offer slots recycle the oldest closed or settled deal, never an open or still-reversible deal. Reversible acceptances also pin their listing slot. Fixed domain state is boxed once at startup so moving the service does not copy the whole state through the firmware stack. Views serialize directly from bounded iterators, without constructing response vectors. A regression test covers a full table, 1,000 offer reads and 1,000 acceptance retries without API/domain allocations after setup.
 
-Wi-Fi/lwIP uses core 0; HTTPS and domain work use core 1. Financial writes have one owner. The synchronous handler serializes requests, so slow clients can delay others.
+Wi-Fi/lwIP and the diagnostics sampler use core 0; HTTPS and domain work use core 1. Financial writes have one owner. The service mutex now covers only the domain call: each httpd worker owns a response buffer, so serializing a reply and writing it to the socket happens outside the lock. Four TLS sockets are served concurrently; requests beyond that queue rather than being refused, so slow clients still delay others.
+
+`GET /api/v1/diag` is unauthenticated, takes no lock, and is answered from the core 0 sampler's atomics, so it responds while a write is in flight. It reports uptime, internal free/largest/minimum heap, free PSRAM, the sample count and which core owns each role. mbedTLS content buffers are 4 KiB in / 2 KiB out: request bodies are capped at 1 KiB, and the previous 16 KiB input buffer could not be allocated four times inside the reserved internal RAM.
 
 Validated events append durably before state changes. Failed or ambiguous writes latch the service unavailable until replay. Complete corrupt records fail startup; only an incomplete final desktop frame is truncated. NVS initialization errors do not authorize automatic erasure. The firmware's 8 MiB NVS partition and overall layout differ from Go.
 
 After 4,096 commands, writes refuse further changes and reads remain available. There is no compaction, export or automatic erase. Add backup/compaction before long-term use. Amounts and IDs stay within JavaScript's exact integer range; money never uses floating point.
 
-See [API.md](API.md) and [VALIDATION.md](VALIDATION.md).
+USD issuance is Nana-only. Quotes support BID/ASK, integer cents per coin, all-or-nothing takes, expiry and owner/Nana cancellation. A take validates both wallets and records both currency legs in one durable event. Balances and quote status replay together; there is no half-trade state. Ordinary disabled accounts cannot send or receive. Currency listings retain descriptive metadata but do not themselves move USD wallets.
+
+See [API.md](API.md), [PARITY.md](PARITY.md) and [VALIDATION.md](VALIDATION.md).

@@ -2,7 +2,7 @@ import time
 
 import requests
 
-from .common import ORIGIN, health, pkce
+from .common import ORIGIN, VERIFY, health, pkce
 
 
 class API:
@@ -11,6 +11,7 @@ class API:
         self.evidence = evidence
         self.session = requests.Session()
         self.session.trust_env = False
+        self.session.verify = VERIFY
         self.session.headers.update({"Origin": ORIGIN})
 
     def call(self, method, path, body=None, token=None, expected=200, key=None):

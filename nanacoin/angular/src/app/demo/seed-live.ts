@@ -102,9 +102,14 @@ export class LiveSeeder {
 
       this.log.info('seed', 'finished', { members: members.length });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      this.lastError.set(message);
-      this.log.error('seed', 'stopped early', { error: message });
+      this.lastError.set(explain(e));
+      this.log.error('seed', 'stopped early', {
+        error: e instanceof Error ? e.message : String(e),
+        code: e instanceof ApiError ? e.code : undefined,
+        status: e instanceof ApiError ? e.status : undefined,
+        phase: this.progress()?.phase,
+        at: this.progress()?.done,
+      });
     } finally {
       // Back to whoever pressed the button.
       try {
@@ -307,6 +312,42 @@ export class LiveSeeder {
  * ten.
  */
 const WRITE_PACING_MS = 120;
+
+/**
+ * Turns the server's error into something that names the cause.
+ *
+ * The seeder logs in as each member, and sessions are RAM-only, last eight
+ * hours, and are never logged out. On a board with 32 slots a few runs fill
+ * the table; the login is then refused, the client drops the account it could
+ * not re-authenticate, and the *next* request fails with the server's own
+ * wording - "invalid or expired token". Which is true, and tells whoever is
+ * reading it nothing about what to do.
+ *
+ * The board now recycles a user's oldest session rather than refusing, so
+ * this should be rare. It is still worth saying plainly when it happens.
+ */
+function explain(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.code === 'too_many_sessions') {
+      return (
+        'the board has no room for another sign-in. It holds a limited number ' +
+        'of sessions and frees them only as they expire. Restarting the board ' +
+        'clears them.'
+      );
+    }
+    if (e.status === 401) {
+      return (
+        'the sign-in used for seeding stopped being accepted. If the board was ' +
+        'restarted mid-run its sessions are gone; sign in again and retry.'
+      );
+    }
+    if (e.status === 507) {
+      return 'the board is out of room for more records.';
+    }
+    return e.message;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
 
 function categoryName(id: number): string {
   return CATEGORIES.find((c) => c.id === id)?.name ?? '';

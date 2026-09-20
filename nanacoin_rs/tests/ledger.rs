@@ -150,6 +150,7 @@ fn purchase_is_atomic_and_reversal_cannot_be_repeated() {
             title: Title::try_from("Switch time").unwrap(),
             price: 10,
             side: Side::Sell,
+            details: None,
         },
     )
     .unwrap()
@@ -208,6 +209,7 @@ fn want_ad_pays_the_accepting_member() {
             title: Title::try_from("Cookies please").unwrap(),
             price: 5,
             side: Side::Buy,
+            details: None,
         },
     )
     .unwrap()
@@ -278,6 +280,7 @@ fn member_and_listing_capacities_fail_without_partial_mutation() {
                 title: Title::try_from("Thing").unwrap(),
                 price: 1,
                 side: Side::Sell,
+                details: None,
             },
         )
         .unwrap();
@@ -290,7 +293,8 @@ fn member_and_listing_capacities_fail_without_partial_mutation() {
                 description: Memo::new(),
                 title: Title::try_from("Too many").unwrap(),
                 price: 1,
-                side: Side::Sell
+                side: Side::Sell,
+                details: None,
             }
         ),
         Err(Error::Capacity)
@@ -305,6 +309,7 @@ fn member_and_listing_capacities_fail_without_partial_mutation() {
             title: Title::try_from("Reuse closed slot").unwrap(),
             price: 1,
             side: Side::Sell,
+            details: None,
         },
     )
     .unwrap();
@@ -408,7 +413,7 @@ fn surrogate_pairs_decode_but_escaped_backslashes_stay_literal() {
             .0,
             200
         );
-        assert_eq!(s.state().history.last().unwrap().memo, expected);
+        assert_eq!(s.state().history.back().unwrap().memo, expected);
     }
     for encoded in [r"\ud83c", r"\udf6a", r"\ud83c\u0061", r"\uZZZZ"] {
         let body = format!(
@@ -453,6 +458,7 @@ fn full_state_with_worst_case_json_escaping_fits_response_budget() {
                 title: Title::try_from("\u{1}".repeat(80).as_str()).unwrap(),
                 price: MAX_AMOUNT,
                 side: Side::Sell,
+                details: None,
             },
         )
         .unwrap();
@@ -553,7 +559,8 @@ fn oversize_encoded_event_returns_capacity_without_panicking() {
                 title: Title::try_from("\u{1}".repeat(80).as_str()).unwrap(),
                 description: Memo::try_from("\u{1}".repeat(96).as_str()).unwrap(),
                 price: 1,
-                side: Side::Sell
+                side: Side::Sell,
+                details: None,
             }
         ),
         Err(Error::Capacity)

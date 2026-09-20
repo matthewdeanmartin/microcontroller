@@ -9,7 +9,7 @@ use heapless::String;
 use serde::{Deserialize, Serialize};
 
 pub const BODY_LIMIT: usize = 1024;
-pub const RESPONSE_LIMIT: usize = 128 * 1024;
+pub const RESPONSE_LIMIT: usize = 512 * 1024;
 pub const DEFAULT_ORIGINS: &str =
     "http://localhost:4200,http://127.0.0.1:4200,http://nanacoin.local,https://nanacoin.local";
 pub fn origin_allowed(origin: &str, allowed: &str) -> bool {
@@ -199,14 +199,17 @@ pub fn handle_keyed<J: Journal>(
             .ok_or(Error::Unauthorized)?;
         let actor = service.auth.lookup(&service.state, token, now)?;
         match (method, path) {
-            ("GET", "/api/v1/state") => serialize(
-                &View {
-                    member: actor,
-                    state: service.state(),
-                    storage_failed: false,
-                },
-                output,
-            ),
+            ("GET", "/api/v1/state") => {
+                service.state.admin(actor)?;
+                serialize(
+                    &View {
+                        member: actor,
+                        state: service.state(),
+                        storage_failed: false,
+                    },
+                    output,
+                )
+            }
             ("POST", "/api/v1/users") => {
                 if service.state.member(actor)?.role != Role::Nana {
                     return Err(Error::Forbidden);
@@ -286,8 +289,24 @@ pub fn handle_keyed<J: Journal>(
     match result {
         Ok(len) => {
             let path = path.split('?').next().unwrap_or(path);
+            if method == "POST" && path == "/api/v1/auth/logout" {
+                return (204, 0);
+            }
             let created = method == "POST"
-                && ((path.starts_with("/api/v1/listings/") && path.ends_with("/offers"))
+                && (matches!(
+                    path,
+                    "/api/v1/provision"
+                        | "/api/v1/users"
+                        | "/api/v1/listings"
+                        | "/api/v1/quotes"
+                        | "/api/v1/transfers"
+                        | "/api/v1/admin/issue"
+                        | "/api/v1/admin/retire"
+                        | "/api/v1/admin/issue-usd"
+                ) || (path.starts_with("/api/v1/transactions/") && path.ends_with("/reverse"))
+                    || (path.starts_with("/api/v1/listings/") && path.ends_with("/purchase"))
+                    || (path.starts_with("/api/v1/quotes/") && path.ends_with("/take"))
+                    || (path.starts_with("/api/v1/listings/") && path.ends_with("/offers"))
                     || (path.starts_with("/api/v1/offers/") && path.ends_with("/accept")));
             (if created { 201 } else { 200 }, len)
         }

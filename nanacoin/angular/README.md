@@ -21,11 +21,13 @@ npm install     # once
 npm start
 ```
 
-Then open <http://localhost:4200>. With the API running you land on the setup
+Then open <http://localhost:4200/?api=> to use the local Go API through the dev
+proxy. Without that parameter, the default is the TinyGo board at
+`http://nanacoin-api.local`. With the API running you land on the setup
 screen, which asks you to create the household and become Nana. Without it you
 get "Where is NanaCoin?" instead — see below.
 
-`npm start` proxies `/api` to `localhost:8080` (see `proxy.conf.json`), so the
+`npm start` proxies `/api` to `localhost:8080` (see `proxy.conf.mjs`), so the
 site and the API look same-origin during development and CORS never comes up.
 
 ```powershell
@@ -38,7 +40,11 @@ npm test          # unit tests, vitest
 The site does not have to be served by the thing it talks to — that is the
 whole point of the CORS configuration in the Go server.
 
-**The site asks.** If NanaCoin cannot be reached, the first screen is "Where is
+**The default is `nanacoin-api.local`.** No address needs to be entered when
+the TinyGo board is reachable by mDNS on the same LAN. A previously saved
+server remains an override; use `?api=nanacoin-api.local` to replace it.
+
+**The site asks if it cannot connect.** If NanaCoin cannot be reached, the first screen is "Where is
 NanaCoin?" with an address field. Type what the board printed —
 `192.168.1.158` — and press Connect. The scheme and the `/api/v1` suffix are
 filled in, the address is verified against `/status` before being accepted, and
@@ -54,19 +60,20 @@ http://localhost:4200/?api=192.168.1.158
 ```
 
 Bare host, host with a scheme, host with a port, or a full `.../api/v1` all
-work. An empty `?api=` clears it.
+work. An empty `?api=` clears the saved address and uses the page's own origin
+for that visit. Removing the parameter restores the deployment default.
 
 **A meta tag** in `src/index.html`, for a static deployment baked with a known
 address:
 
 ```html
-<meta name="nanacoin-api" content="http://192.168.1.158" />
+<meta name="nanacoin-api" content="http://nanacoin-api.local" />
 ```
 
-**Nothing**, which uses the page's own origin — the dev proxy.
+**Nothing**, which uses the meta tag's default of `nanacoin-api.local`.
 
 Precedence is query parameter, then remembered choice, then meta tag, then
-same-origin.
+same-origin if the meta tag is empty or absent.
 
 Whichever you use, the server's allowed origins must include wherever this site
 is served from, or the browser blocks the request before it is sent. That list

@@ -23,7 +23,14 @@ pub fn call<J: Journal>(
     let mut output = vec![0; api::RESPONSE_LIMIT];
     let body = serde_json::to_vec(&body).unwrap();
     let (status, len) = api::handle(s, "POST", path, auth, &body, &mut output);
-    (status, serde_json::from_slice(&output[..len]).unwrap())
+    (
+        status,
+        if len == 0 {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&output[..len]).unwrap()
+        },
+    )
 }
 pub fn login<J: Journal>(s: &mut Service<J>) -> std::string::String {
     login_as(s, "nana", "1234")

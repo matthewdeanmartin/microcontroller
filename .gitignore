@@ -237,3 +237,4 @@ config.py
 hello_wifi_py/firmware/
 secret_messages/firmware/
 hello_wifi_s3_py/firmware/
+*.exe
