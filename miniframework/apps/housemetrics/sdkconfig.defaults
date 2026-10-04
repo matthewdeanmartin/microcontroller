@@ -1,0 +1,52 @@
+# housemetrics on the ESP32-S2 Mini: one core, 4 MiB flash, 2 MiB PSRAM.
+# Derived from NanaCoin's measured S2 profile.
+CONFIG_IDF_TARGET="esp32s2"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# PSRAM: big buffers (store, responses, TLS records) go there; internal RAM
+# stays for DMA, Wi-Fi and the stacks that write flash.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_NVS_ALLOCATE_CACHE_IN_SPIRAM=y
+# Worker stacks that never write flash (TLS handshakes, scraper) live in PSRAM.
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
+
+# TLS server with session tickets (returning clients skip the ~1 s ECDHE).
+CONFIG_ESP_TLS_SERVER=y
+CONFIG_ESP_TLS_SERVER_SESSION_TICKETS=y
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=n
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# Browsers may send 16 KiB records; our records are at most 1 KiB of body.
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# 1 ms ticks (default 10 ms): every sleep in the serving loop and TLS task
+# rounds up to a tick, and 10 ms ticks capped HTTP throughput near 60 KB/s.
+CONFIG_FREERTOS_HZ=1000
+
+# 3 TLS + 3 HTTP clients + 1 handshake + 2 handoffs + 2 listeners + the
+# scraper's client, with room for DNS/SNTP/mDNS and the accept backlog.
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_MAX_ACTIVE_TCP=16
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5760
+
+# On a crash, save task, PC, backtrace and registers to the coredump
+# partition; the next boot logs the summary (crates/miniframework esp/logcap.rs).
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+
+# Console on UART0 (GPIO 43/44), not USB. The S2's USB CDC console did not
+# enumerate on this board ("USB device not recognized" on Windows, no log),
+# so the app leaves USB alone. Logs: GET /api/v1/log.txt (the board serves
+# its own). Flashing is unaffected: BOOT+RST starts the ROM loader on USB.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y

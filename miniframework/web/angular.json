@@ -1,0 +1,75 @@
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "cli": {
+    "packageManager": "npm",
+    "analytics": false
+  },
+  "newProjectRoot": "projects",
+  "projects": {
+    "housemetrics": {
+      "projectType": "application",
+      "root": "projects/housemetrics",
+      "sourceRoot": "projects/housemetrics/src",
+      "prefix": "hm",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "outputPath": "dist/housemetrics",
+            "browser": "projects/housemetrics/src/main.ts",
+            "tsConfig": "projects/housemetrics/tsconfig.app.json",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "projects/housemetrics/public"
+              }
+            ],
+            "styles": [
+              "node_modules/uplot/dist/uPlot.min.css",
+              "projects/housemetrics/src/styles.css"
+            ]
+          },
+          "configurations": {
+            "production": {
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "400kB",
+                  "maximumError": "700kB"
+                },
+                {
+                  "type": "anyComponentStyle",
+                  "maximumWarning": "6kB",
+                  "maximumError": "10kB"
+                }
+              ],
+              "outputHashing": "all"
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "configurations": {
+            "production": {
+              "buildTarget": "housemetrics:build:production"
+            },
+            "development": {
+              "buildTarget": "housemetrics:build:development"
+            }
+          },
+          "defaultConfiguration": "development",
+          "options": {
+            "proxyConfig": "projects/housemetrics/proxy.conf.mjs"
+          }
+        }
+      }
+    }
+  }
+}

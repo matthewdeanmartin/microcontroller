@@ -1,0 +1,8 @@
+/target/
+/.embuild/
+/.env
+/sdkconfig*
+!/sdkconfig.defaults
+/firmware/
+/config.py
+/*.log

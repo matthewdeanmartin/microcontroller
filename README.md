@@ -1,11 +1,12 @@
 # microcontroller
 
-Microcontroller experiments, on two boards:
+Microcontroller experiments, on three boards:
 
 | Board | Chip | Notable |
 |---|---|---|
 | DiGiYes ESP32-S2 Mini V1.0.0 | ESP32-S2FN4R2 | 4MB flash, 2MB PSRAM, native USB only |
 | ESP32-S3-N16R8 | ESP32-S3 | 16MB flash, 8MB octal PSRAM, dual-core, **BLE**, UART bridge |
+| Waveshare ESP32-C6-LCD-1.47 | ESP32-C6FH8 | Attached unit: 8MB flash, 172×320 LCD, RGB LED, microSD slot, Wi-Fi 6 |
 
 Focus is **self-hosted web things**: small always-on servers on cheap hardware.
 No soldering, no GPIO wiring.
@@ -14,12 +15,19 @@ No soldering, no GPIO wiring.
 
 | Project | What it is |
 |---|---|
+| [`miniframework`](miniframework/) | Rust + Angular framework for board-served web apps (HTTP/HTTPS, five wire formats, household CA), extracted from NanaCoin and mastomini. First app: **housemetrics**, a metrics store and dashboard for the **S2 Mini**, with a format lab measuring whether serialization matters. |
+| [`async_worker_rs`](async_worker_rs/) | Rust on the **S2 Mini**. HTTP 202 job tokens, polling, and a bounded background worker querying NIST time; includes a desktop website preview. |
 | [`hello_wifi`](hello_wifi/) | C / ESP-IDF. Status page over WiFi. |
 | [`hello_wifi_py`](hello_wifi_py/) | MicroPython. Same page, plus a local preview and a 3-second deploy. |
 | [`secret_messages`](secret_messages/) | MicroPython. A pastebin for the house — each message encrypted so only its intended readers can open it. Mastodon DMs the recipient a link, with no key on the board. |
 | [`hello_wifi_s3_py`](hello_wifi_s3_py/) | MicroPython on the **S3**. A live system dashboard — board serves JSON, browser draws the charts — plus the RGB LED as a status indicator. |
+| [`screen_info`](screen_info/) | ESP-IDF on the **Waveshare C6 LCD**. Live screen and LAN dashboard, BOOT switches to memory/storage, numbered POST flashes on the RGB LED. |
 
 ## Docs
+
+Board references: [S2 Mini](BOARD_SKILL_ESP32_S2_MINI.md),
+[S3 N16R8](BOARD_SKILL_ESP32_S3_N16R8.md), and
+[Waveshare C6 LCD 1.47](BOARD_SKILL_ESP32_C6_LCD_1_47.md).
 
 The Go projects are [`nanacoin`](nanacoin/), a TinyGo household currency and
 marketplace for the ESP32-S3, and [`nanacoin_load`](nanacoin_load/), its separate

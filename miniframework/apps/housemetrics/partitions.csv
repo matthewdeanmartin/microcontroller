@@ -1,0 +1,9 @@
+# ESP32-S2 Mini, 4 MiB flash. Metrics live in RAM; NVS holds only device
+# tokens and scrape targets. The app (firmware + web bundle) takes the rest,
+# except 64 KiB for a core dump: a crash's task, PC and backtrace, which the
+# next boot reports in /api/v1/log.
+# Name, Type, SubType, Offset, Size
+nvs, data, nvs, 0x9000, 0x6000,
+phy_init, data, phy, 0xf000, 0x1000,
+factory, app, factory, 0x10000, 0x3E0000,
+coredump, data, coredump, 0x3F0000, 0x10000,

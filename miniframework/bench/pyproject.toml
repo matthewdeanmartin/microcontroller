@@ -1,0 +1,21 @@
+[project]
+name = "fmtbench"
+version = "0.1.0"
+description = "Measures what a miniframework request costs: connection setup vs serialization"
+requires-python = ">=3.12"
+dependencies = [
+  "cbor2>=5.6",
+  "msgpack>=1.1",
+]
+
+[project.scripts]
+fmtbench = "fmtbench.cli:main"
+ui-smoke = "fmtbench.ui_smoke:main"
+writer = "fmtbench.writer:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "playwright==1.63.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

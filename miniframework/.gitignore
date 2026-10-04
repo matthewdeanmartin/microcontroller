@@ -1,0 +1,9 @@
+# Build output and local state
+target/
+.embuild/
+.local/
+node_modules/
+.angular/
+web/dist/
+# Server private keys: re-sign with tools/certs.sh (the household CA stays elsewhere)
+*.key

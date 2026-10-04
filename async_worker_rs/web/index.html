@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Time worker · S2 lab</title>
+<style>
+:root{color-scheme:dark;font:16px system-ui;background:#0d1420;color:#e1eaf4}body{max-width:900px;margin:5vh auto;padding:24px}small,.muted{color:#9eb1c8}h1{font-size:clamp(2rem,6vw,3.6rem);margin:.3em 0}header{margin-bottom:32px}button{background:#99efc9;border:0;border-radius:7px;padding:13px 20px;font:inherit;font-weight:650;cursor:pointer;color:#10251d}button:disabled{opacity:.5}section{background:#162234;border:1px solid #2a3b51;border-radius:12px;padding:22px;margin:18px 0}code{color:#99efc9}#jobs{display:grid;gap:12px}.job{border-top:1px solid #34465d;padding-top:14px;overflow-wrap:anywhere}.job p{margin:.5em 0}.state{text-transform:uppercase;letter-spacing:.1em;font-size:.8em;color:#99efc9}#message{min-height:1.6em;color:#ffd090}.flow{line-height:2}a{color:#99efc9}#health{float:right}summary{cursor:pointer}pre{white-space:pre-wrap}
+</style>
+<header><small>ESP32-S2 / RUST ARCHITECTURE LAB</small><h1>Ask now. Collect later.</h1><p class="muted">A tiny web server that stays available while a background worker asks NIST for the time.</p></header>
+<section><span id="health" class="muted">Connecting…</span><h2>Request a time sample</h2><p class="flow"><code>POST</code> → <code>202 + token</code> → poll → <code>result</code></p><p class="muted">Eight job slots. One worker. Five seconds between upstream calls. Results remain for two minutes.</p><button id="submit">Ask NIST for the time</button><p id="message" role="status"></p><div id="jobs" aria-live="polite"></div></section>
+<details><summary>What this experiment demonstrates</summary><p>The HTTP handler admits a job and returns immediately. A separate Rust thread / FreeRTOS task performs the UDP exchange. Polling reads a small snapshot; it never waits for NIST. There is no browser-to-NIST request.</p><p>“Async” describes the request/job contract. This implementation uses a bounded worker thread, not Rust async/await. Jobs live in RAM and disappear after a restart. NTP samples are unauthenticated server transmit timestamps, not precision clock synchronization.</p></details>
+<script>
+const $=s=>document.querySelector(s), sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function fetchBounded(url,options={}) { return fetch(url,{...options,signal:AbortSignal.timeout(5000)}); }
+async function health(){try{const r=await fetchBounded('/api/health');if(!r.ok)throw Error();const h=await r.json();$('#health').textContent=`${h.occupied} / ${h.capacity} slots used`;}catch{$('#health').textContent='Board unavailable';}}
+health();setInterval(health,5000);
+$('#submit').onclick=async()=>{
+  $('#submit').disabled=true;$('#message').textContent='';
+  try{
+    const start=performance.now(),r=await fetchBounded('/api/jobs',{method:'POST'}),body=await r.json();
+    if(r.status!==202)throw Error(body.error||`HTTP ${r.status}`);
+    const card=document.createElement('div');card.className='job';
+    const state=document.createElement('b');state.className='state';state.textContent='queued';
+    const token=document.createElement('p');token.textContent=`Token ${body.id}`;
+    const timing=document.createElement('small');timing.textContent=`Accepted in ${Math.round(performance.now()-start)} ms · HTTP 202`;
+    const result=document.createElement('p');card.append(state,token,timing,result);$('#jobs').prepend(card);
+    while($('#jobs').children.length>8)$('#jobs').lastChild.remove();
+    poll(body.poll_url,state,result);
+    health();
+  }catch(e){$('#message').textContent=`${e.message}. If submission timed out, a job may still have been accepted.`;}
+  finally{$('#submit').disabled=false;}
+};
+async function poll(url,state,result){
+  const deadline=Date.now()+100000;let failures=0;
+  while(Date.now()<deadline){
+    await sleep(1000);
+    try{
+      const r=await fetchBounded(url),j=await r.json();
+      if(!r.ok){state.textContent='unavailable';result.textContent=j.error;return;}
+      failures=0;state.textContent=j.status;
+      if(j.status==='succeeded'){result.textContent=`${new Date(j.result.unix_ms).toISOString()} · ${j.result.round_trip_ms} ms round trip · stratum ${j.result.stratum} · ${j.result.server}`;health();return;}
+      if(j.status==='failed'){result.textContent=j.error;health();return;}
+    }catch(e){result.textContent=`Connection interrupted; retrying (${++failures})…`;}
+  }
+  state.textContent='polling stopped';result.textContent='Browser deadline reached. The job may still exist; poll its token manually.';
+}
+</script>
+</html>

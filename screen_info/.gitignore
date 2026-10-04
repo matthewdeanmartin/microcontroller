@@ -1,0 +1,5 @@
+wifi_config.h
+sdkconfig*
+!sdkconfig.defaults
+build/
+factory-backup.bin

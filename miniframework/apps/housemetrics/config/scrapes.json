@@ -1,0 +1,8 @@
+{
+  "targets": [
+    { "name": "mastomini", "url": "http://mastomini.local/metrics", "every_s": 30 },
+    { "name": "nanacoin", "url": "http://nanacoin.local/metrics", "every_s": 30 },
+    { "name": "mastomini-bots", "url": "http://mastomini-bots.local/metrics", "every_s": 30 },
+    { "name": "minicloud", "url": "http://minicloud.local/metrics", "every_s": 30 }
+  ]
+}

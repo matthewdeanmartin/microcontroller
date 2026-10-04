@@ -1,0 +1,56 @@
+[package]
+name = "housemetrics"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Household metrics store and dashboard on an ESP32-S2, built on miniframework"
+license = "MIT"
+publish = false
+default-run = "housemetrics"
+build = "build.rs"
+
+[[bin]]
+name = "housemetrics"
+path = "src/bin/desktop.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "housemetrics-esp32"
+path = "src/bin/esp32.rs"
+required-features = ["esp32"]
+
+[features]
+default = ["desktop"]
+desktop = []
+esp32 = ["miniframework/esp32", "miniframework/coredump", "dep:esp-idf-svc", "dep:embuild", "bundled-web"]
+# Embed the Angular app (run `make web` first).
+bundled-web = []
+
+[dependencies]
+miniframework = { path = "../../crates/miniframework" }
+sha2 = { version = "0.10", default-features = false }
+getrandom = "0.2"
+log = "0.4"
+
+# The app depends on esp-idf-svc directly (not only through miniframework)
+# so its build script receives ESP-IDF's link arguments.
+[target.'cfg(target_os = "espidf")'.dependencies]
+esp-idf-svc = { version = "=0.52.1", optional = true, features = ["experimental"] }
+
+[build-dependencies]
+miniframework = { path = "../../crates/miniframework" }
+embuild = { version = "0.33", optional = true, features = ["espidf"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[package.metadata.esp-idf-sys]
+esp_idf_version = "v5.5.3"
+esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/mdns", version = "1.8.2" }
+bindings_header = "src/mdns_bindings.h"

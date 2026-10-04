@@ -1,0 +1,42 @@
+[package]
+name = "async_worker_rs"
+version = "0.1.0"
+edition = "2021"
+default-run = "async-worker"
+
+[[bin]]
+name = "async-worker"
+path = "src/bin/desktop.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "async-worker-s2"
+path = "src/bin/esp32.rs"
+required-features = ["esp32"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tiny_http"]
+esp32 = ["dep:esp-idf-svc", "dep:embuild"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.2"
+tiny_http = { version = "0.12", optional = true }
+
+[target.'cfg(target_os = "espidf")'.dependencies]
+esp-idf-svc = { version = "=0.52.1", optional = true }
+
+[build-dependencies]
+embuild = { version = "0.33", optional = true, features = ["espidf"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[package.metadata.esp-idf-sys]
+esp_idf_version = "v5.5.3"
+esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
