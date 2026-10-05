@@ -5,12 +5,14 @@ description = "Measures what a miniframework request costs: connection setup vs 
 requires-python = ">=3.12"
 dependencies = [
   "cbor2>=5.6",
+  "h2>=4.1",
   "msgpack>=1.1",
 ]
 
 [project.scripts]
 fmtbench = "fmtbench.cli:main"
 ui-smoke = "fmtbench.ui_smoke:main"
+pageload = "fmtbench.pageload:main"
 writer = "fmtbench.writer:main"
 
 [dependency-groups]

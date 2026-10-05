@@ -91,6 +91,26 @@ fn main() {
     )
     .expect("embed scrape configuration");
 
+    // The firmware's TLS certificate and board marker follow its hostname,
+    // so a second board (housemetrics-v2.local) is a build setting, not an
+    // edit: certs/<host>.crt/.key (make certs HOST=...) and the marker
+    // boardsafe checks before writing.
+    if std::env::var_os("CARGO_FEATURE_ESP32").is_some() {
+        println!("cargo:rerun-if-env-changed=HOUSEMETRICS_HOSTNAME");
+        println!("cargo:rerun-if-env-changed=HOUSEMETRICS_BOARD");
+        let host = std::env::var("HOUSEMETRICS_HOSTNAME").unwrap_or_else(|_| "housemetrics".into());
+        let board = std::env::var("HOUSEMETRICS_BOARD").unwrap_or_else(|_| "s2".into());
+        let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+        for ext in ["crt", "key"] {
+            let source = root.join(format!("certs/{host}.{ext}"));
+            println!("cargo:rerun-if-changed={}", source.display());
+            std::fs::copy(&source, out.join(format!("server.{ext}"))).unwrap_or_else(|_| {
+                panic!("no {}: run `make certs HOST={host}`", source.display())
+            });
+        }
+        println!("cargo:rustc-env=HOUSEMETRICS_MARKER=HOUSEMETRICS-BOARD:{board}:{host}.local;");
+    }
+
     if std::env::var_os("CARGO_FEATURE_BUNDLED_WEB").is_some() {
         let assets = root.join(".embuild/web/assets.rs");
         assert!(

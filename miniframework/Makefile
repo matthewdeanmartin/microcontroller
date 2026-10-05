@@ -4,6 +4,20 @@ SHELL := bash
 APP := apps/housemetrics
 CARGO ?= cargo
 
+# Which physical board (apps/housemetrics/boards.py). Each has its own
+# hostname, certificate, build directory and scrape list.
+BOARD ?= s2
+HOST_s2 := housemetrics
+HOST_s2v2 := housemetrics-v2
+CONFIG_s2v2 := $(CURDIR)/$(APP)/config/scrapes-none.json
+HOST ?= $(HOST_$(BOARD))
+export CARGO_TARGET_DIR ?= C:/mfw-$(BOARD)
+export HOUSEMETRICS_BOARD := $(BOARD)
+export HOUSEMETRICS_HOSTNAME := $(HOST)
+ifneq ($(CONFIG_$(BOARD)),)
+export HOUSEMETRICS_CONFIG := $(CONFIG_$(BOARD))
+endif
+
 .PHONY: help test test-rust test-web test-tools fixtures check run web web-dev bundle run-bundle certs firmware flash image-check update probe bench
 
 help:
@@ -13,9 +27,15 @@ help:
 	  'make run         housemetrics on http://127.0.0.1:8080 (API only)' \
 	  'make web-dev     Angular dev server on http://localhost:4200 (proxies /api to :8080)' \
 	  'make run-bundle  build the Angular app and serve UI + API from :8080' \
-	  'make certs       issue housemetrics.local certificate from the household CA' \
-	  'make firmware    build the ESP32-S2 firmware (no flashing)' \
-	  'make flash PORT=COMn   FIRST INSTALL: bootloader + table + app (see apps/housemetrics/DEPLOY_S2.md)' 	  'make image-check  is the built image this board'"'"'s? (board marker, chip, size; no board)' 	  'make update PORT=COMn  app-only update: checks chip, MAC, partition table first; keeps NVS' 	  'make probe ADDRESS=ip  strict live check: TLS, identity, every asset, /ca' \
+	  '' \
+	  'Board commands take BOARD=s2 (housemetrics.local, the default) or' \
+	  'BOARD=s2v2 (housemetrics-v2.local, the test bed); see apps/housemetrics/boards.py' \
+	  'make certs       issue <host>.local certificate from the household CA' \
+	  'make firmware    build the firmware (no flashing); TRANSPORT=http|https|http2' \
+	  'make flash PORT=COMn   FIRST INSTALL: bootloader + table + app (see apps/housemetrics/DEPLOY_S2.md)' \
+	  'make image-check  is the built image this board'"'"'s? (board marker, chip, size; no board)' \
+	  'make update PORT=COMn  app-only update: checks chip, MAC, partition table first; keeps NVS' \
+	  'make probe ADDRESS=ip  strict live check: TLS, identity, every asset, /ca' \
 	  'make bench URL=https://housemetrics.local   connection-mode benchmark (bench/)'
 
 test: test-rust test-web test-tools
@@ -39,6 +59,8 @@ check: test
 	cd crates/miniframework && $(CARGO) fmt --check && $(CARGO) clippy --all-targets -- -D warnings
 	cd crates/miniframework && $(CARGO) clippy --all-targets --no-default-features -- -D warnings
 	cd crates/miniframework && $(CARGO) test --no-default-features
+	cd crates/miniframework && $(CARGO) clippy --all-targets --features http2 -- -D warnings
+	cd crates/miniframework && $(CARGO) test --features http2
 	cd $(APP) && $(CARGO) fmt --check && $(CARGO) clippy --all-targets -- -D warnings
 	cd web && npx ng build housemetrics
 
@@ -56,10 +78,15 @@ run-bundle: web
 	cd $(APP) && $(CARGO) run --features bundled-web
 
 certs:
-	bash tools/certs.sh $(APP) housemetrics
+	@[ -n "$(HOST)" ] || { echo 'Unknown BOARD=$(BOARD)' >&2; exit 2; }
+	bash tools/certs.sh $(APP) $(HOST)
 
+# Transports: http (plain HTTP only, no TLS code), https (the default, as
+# deployed), http2 (HTTP/2 over HTTPS, chosen by the browser with ALPN).
+TRANSPORT ?= https
 firmware: certs web
-	bash tools/build-firmware.sh $(APP) housemetrics-esp32
+	@case "$(TRANSPORT)" in http|https|http2) ;; *) echo 'TRANSPORT must be http, https or http2' >&2; exit 2;; esac
+	bash tools/build-firmware.sh $(APP) housemetrics-esp32 $(if $(filter-out http,$(TRANSPORT)),--features $(TRANSPORT))
 
 flash:
 	@[ -n "$(PORT)" ] || { echo 'Set PORT=COMn (the S2 in download mode: hold BOOT, tap RST).' >&2; exit 2; }
@@ -69,15 +96,15 @@ BOARDSAFE := uv run --project tools/boardsafe
 REGISTRY := $(APP)/boards.py
 
 image-check:
-	$(BOARDSAFE) boardsafe-image --registry $(REGISTRY) --board s2
+	$(BOARDSAFE) boardsafe-image --registry $(REGISTRY) --board $(BOARD)
 
 update:
 	@[ -n "$(PORT)" ] || { echo 'Set PORT=COMn (the S2 in download mode: hold BOOT, tap RST).' >&2; exit 2; }
-	$(BOARDSAFE) boardsafe-update --registry $(REGISTRY) --board s2 --port "$(PORT)" $(ARGS)
+	$(BOARDSAFE) boardsafe-update --registry $(REGISTRY) --board $(BOARD) --port "$(PORT)" $(ARGS)
 
 probe:
 	@[ -n "$(ADDRESS)" ] || { echo 'Set ADDRESS=<board IP> (or housemetrics.local)' >&2; exit 2; }
-	$(BOARDSAFE) boardsafe-probe --registry $(REGISTRY) --board s2 --address "$(ADDRESS)"
+	$(BOARDSAFE) boardsafe-probe --registry $(REGISTRY) --board $(BOARD) --address "$(ADDRESS)"
 
 bench:
 	@[ -n "$(URL)" ] || { echo 'Set URL=https://housemetrics.local (or http://...)' >&2; exit 2; }

@@ -15,8 +15,9 @@ See [docs/FORMATS.md](docs/FORMATS.md) for the answer so far.
 
 ## What the framework gives an app
 
-- **One connection loop for HTTP and HTTPS**, nonblocking, sized for a
-  2 MiB board: bounded connections, request buffers and unsent-response
+- **One connection loop for HTTP, HTTPS and HTTP/2** (each a Cargo
+  feature: plain HTTP only for the smallest boards, `tls`, `http2`),
+  nonblocking, sized for a 2 MiB board: bounded connections, request buffers and unsent-response
   memory; TLS handshakes on their own task; keep-alive, `TCP_NODELAY` and
   TLS session tickets (a returning browser skips the ~1 s handshake).
 - **Five wire formats from one declaration.** `message!` gives a struct,

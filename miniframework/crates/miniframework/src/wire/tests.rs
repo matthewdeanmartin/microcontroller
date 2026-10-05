@@ -250,7 +250,7 @@ fn hostile_input_is_rejected_not_panicked() {
     let value = sample();
     for format in Format::ALL {
         let bytes = to_vec(format, &value).unwrap();
-        for end in (0..bytes.len()).step_by(7) {
+        for end in 0..bytes.len() {
             let _ = decode::<Everything>(format, &bytes[..end]);
         }
         let mut flipped = bytes.clone();
@@ -270,6 +270,29 @@ fn hostile_input_is_rejected_not_panicked() {
     let mut mp = vec![0x81, 0xa1, b'x'];
     mp.extend(std::iter::repeat_n(0x91u8, 10_000));
     assert!(decode::<Pt>(Format::MsgPack, &mp).is_err());
+}
+
+#[test]
+fn all_single_byte_inputs_and_each_bit_mutation_are_panic_free() {
+    let value = Everything {
+        id: 1,
+        name: "é".into(),
+        nested: Some(Pt { t: 7, v: -1.5 }),
+        ..Default::default()
+    };
+    for format in Format::ALL {
+        for byte in 0..=u8::MAX {
+            let _ = decode::<Everything>(format, &[byte]);
+        }
+        let bytes = to_vec(format, &value).unwrap();
+        for at in 0..bytes.len() {
+            for bit in 0..8 {
+                let mut mutated = bytes.clone();
+                mutated[at] ^= 1 << bit;
+                let _ = decode::<Everything>(format, &mutated);
+            }
+        }
+    }
 }
 
 #[test]

@@ -77,10 +77,17 @@ impl Ring {
         }
         let len = u16::from_le_bytes([self.bytes[9], self.bytes[10]]) as usize;
         self.bytes.drain(..(HEADER + len).min(self.bytes.len()));
-        self.first_seq += 1;
+        self.first_seq = self.first_seq.saturating_add(1);
     }
 
     pub fn push(&mut self, t: u32, level: u8, text: &str) {
+        // Restart the cursor epoch before overflow. A cursor from the previous
+        // epoch gets the retained new epoch, rather than waiting forever.
+        if self.next_seq == u32::MAX {
+            self.bytes.clear();
+            self.first_seq = 1;
+            self.next_seq = 1;
+        }
         let mut end = text.len().min(MAX_LINE);
         while !text.is_char_boundary(end) {
             end -= 1;
@@ -104,6 +111,7 @@ impl Ring {
 
     /// Lines with `seq > after`, at most `limit`, oldest first.
     pub fn page(&self, after: u32, limit: usize) -> (Vec<LogLine>, u32, u32) {
+        let after = if after >= self.next_seq { 0 } else { after };
         let mut lines = Vec::new();
         let mut at = 0;
         let mut seq = self.first_seq;
@@ -122,12 +130,12 @@ impl Ring {
                 });
             }
             at += HEADER + len;
-            seq += 1;
+            seq = seq.saturating_add(1);
         }
         let next = lines
             .last()
             .map_or(after.max(self.first_seq.saturating_sub(1)), |l| l.seq);
-        let dropped = self.first_seq.saturating_sub(after + 1);
+        let dropped = self.first_seq.saturating_sub(after.saturating_add(1));
         (lines, next, dropped)
     }
 }
@@ -349,6 +357,25 @@ pub fn install(capacity: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hostile_cursor_and_sequence_exhaustion_start_a_new_epoch() {
+        let mut ring = Ring::new(100);
+        ring.push(0, INFO, "old");
+        assert_eq!(ring.page(u32::MAX, 10).0[0].text, "old");
+        ring.next_seq = u32::MAX - 1;
+        ring.push(1, INFO, "last");
+        ring.push(2, INFO, "new epoch");
+        let (lines, next, dropped) = ring.page(u32::MAX - 1, 10);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "new epoch");
+        assert_eq!((next, dropped), (1, 0));
+        for capacity in 0..=HEADER {
+            let mut tiny = Ring::new(capacity);
+            tiny.push(0, INFO, "é");
+            assert!(tiny.page(u32::MAX, usize::MAX).0.is_empty());
+        }
+    }
 
     #[test]
     fn ring_keeps_newest_lines_and_pages() {

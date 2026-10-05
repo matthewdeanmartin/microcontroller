@@ -9,6 +9,7 @@ export function decodeCbor(bytes: Uint8Array): unknown {
   const c = new Cursor(bytes);
   const v = read(c, 0);
   if (v === BREAK) throw new WireError('unexpected CBOR break');
+  if (c.pos !== bytes.length) throw new WireError('trailing CBOR data');
   return v;
 }
 
@@ -66,6 +67,7 @@ function read(c: Cursor, depth: number): unknown {
     }
   }
   const n = argument(c, info);
+  if (n < 0 && ![2, 3, 4, 5].includes(major)) throw new WireError('invalid indefinite head');
   switch (major) {
     case 0:
       return n;
@@ -76,8 +78,12 @@ function read(c: Cursor, depth: number): unknown {
       if (n < 0) {
         const parts: unknown[] = [];
         for (;;) {
+          c.need(1);
+          if (c.bytes[c.pos] === 0xff) { c.pos++; break; }
+          if (c.bytes[c.pos] >> 5 !== major || (c.bytes[c.pos] & 31) === 31) {
+            throw new WireError('invalid indefinite string chunk');
+          }
           const part = read(c, depth + 1);
-          if (part === BREAK) break;
           parts.push(part);
         }
         return major === 3 ? parts.join('') : null;
@@ -98,22 +104,30 @@ function read(c: Cursor, depth: number): unknown {
         }
       }
       c.need(n);
-      for (let i = 0; i < n; i++) out.push(read(c, depth + 1));
+      for (let i = 0; i < n; i++) {
+        const value = read(c, depth + 1);
+        if (value === BREAK) throw new WireError('unexpected CBOR break');
+        out.push(value);
+      }
       return out;
     }
     case 5: {
-      const out: Record<string, unknown> = {};
+      const out: Record<string, unknown> = Object.create(null);
       if (n < 0) {
         for (;;) {
           const k = read(c, depth + 1);
           if (k === BREAK) return out;
-          out[String(k)] = read(c, depth + 1);
+          const value = read(c, depth + 1);
+          if (value === BREAK) throw new WireError('missing CBOR map value');
+          out[String(k)] = value;
         }
       }
       c.need(n * 2);
       for (let i = 0; i < n; i++) {
         const k = read(c, depth + 1);
-        out[String(k)] = read(c, depth + 1);
+        const value = read(c, depth + 1);
+        if (k === BREAK || value === BREAK) throw new WireError('unexpected CBOR break');
+        out[String(k)] = value;
       }
       return out;
     }

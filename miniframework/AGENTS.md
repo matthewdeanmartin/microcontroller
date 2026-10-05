@@ -50,10 +50,19 @@ from a copy of one of them.
 - **No app UI in the framework.** Each app owns its Angular client; the
   framework's only page is the startup-failure text on port 8080 (and the
   `/trust` page). No auth in the framework yet.
-- **NanaCoin uses this crate** (`../../nanacoin/nanacoin_rs`, without the
-  `gzip` feature). A change to `Site`, `Mux`, `esp` or `web` must keep its
-  tests green too: `cd ../../nanacoin/nanacoin_rs && cargo test` and
-  `python scripts/smoke.py` (see its Makefile).
+- **Four apps use this crate**: NanaCoin (`../../nanacoin/nanacoin_rs`,
+  features `tls`), Minicloud (`../../mastomini/minicloud_rs`, plain HTTP on
+  an ESP32-C6 without PSRAM, streamed blob uploads/downloads), mastomini
+  (`../../mastomini/mastomini_rs`: its own router owns every path,
+  `Cors::Public` API, runtime Wi-Fi with a setup network, desktop HTTPS)
+  and housemetrics. A change to `Site`, `Mux`, `http`, `esp` or `web` must
+  keep their tests green: NanaCoin `cargo test` + `python scripts/smoke.py`,
+  Minicloud `cargo test` + `uv run --with paho-mqtt==2.1.0 python
+  scripts/smoke.py`, mastomini `make test smoke client-test conformance`
+  (use a separate `CARGO_TARGET_DIR` if the owner has a dev server
+  running).
+- **Transports are features**: none (HTTP), `tls`, `http2`. Test all three
+  (`make check` does).
 - **Done means `make check` passes** (Rust tests with and without `gzip`,
   clippy `-D warnings`, fmt, boardsafe tests, TypeScript decoder tests,
   Angular build). If you touched the UI, also run

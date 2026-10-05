@@ -8,16 +8,25 @@
 //! code running on the desktop for development.
 //!
 //! Start with `docs/RECIPES.md` and the `housemetrics` app.
+#![deny(unsafe_code)]
+#![cfg_attr(not(all(feature = "esp32", target_os = "espidf")), forbid(unsafe_code))]
+pub mod captive;
 pub mod events;
 pub mod fetch;
+#[cfg(feature = "http2")]
+pub mod h2;
 pub mod http;
 pub mod influx;
 pub mod kv;
 pub mod logbuf;
 pub mod mux;
+#[cfg(any(test, all(feature = "esp32", target_os = "espidf")))]
+mod retained_log;
 pub mod site;
 pub mod status;
 pub mod sys;
+#[cfg(any(test, all(feature = "tls", feature = "esp32", target_os = "espidf")))]
+mod tls_config;
 pub mod web;
 pub mod wire;
 
@@ -25,9 +34,10 @@ pub mod wire;
 pub mod desktop;
 
 #[cfg(all(feature = "esp32", target_os = "espidf"))]
+#[allow(unsafe_code)] // Reviewed ESP-IDF ABI boundary.
 pub mod esp;
 
-pub use site::{ApiError, Config, Reply, Request, Service, Site};
+pub use site::{ApiError, Config, Cors, Reply, Request, Service, Site};
 pub use wire::{Encode, Format, Message, Writer};
 
 use std::sync::OnceLock;

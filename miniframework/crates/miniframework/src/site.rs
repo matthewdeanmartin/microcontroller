@@ -11,6 +11,8 @@ use crate::web::{self, Asset, Spa};
 use crate::wire::{self, schema::SchemaDoc, Compression, Encode, Format, Message, Schema};
 use crate::{message, uptime_ms, wall_ms};
 use std::borrow::Cow;
+use std::cell::{RefCell, RefMut};
+use std::io::{self, Read};
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::Instant;
 
@@ -70,9 +72,14 @@ pub struct Request<'a> {
     /// Raw query string (after `?`), possibly empty.
     pub query: &'a str,
     pub body: &'a [u8],
+    /// Body length: `body.len()`, or the declared length of a streamed body.
+    pub length: usize,
     /// Arrived over TLS.
     pub secure: bool,
     headers: &'a [(String, String)],
+    /// A body too large to buffer, still arriving (see
+    /// [`Service::streamed_body`]). Read it with [`Request::body_reader`].
+    stream: Option<&'a RefCell<dyn Read + 'a>>,
     /// Bounds a gunzipped body (only read with the `gzip` feature).
     #[cfg_attr(not(feature = "gzip"), allow(dead_code))]
     body_limit: usize,
@@ -94,9 +101,42 @@ impl<'a> Request<'a> {
             path,
             query,
             body,
+            length: body.len(),
             secure,
             headers,
+            stream: None,
             body_limit: 64 * 1024,
+        }
+    }
+
+    /// A request whose body is read from `stream` (tests and tools).
+    pub fn streaming(
+        method: &'a str,
+        uri: &'a str,
+        headers: &'a [(String, String)],
+        stream: &'a RefCell<dyn Read + 'a>,
+        length: usize,
+        secure: bool,
+    ) -> Self {
+        let mut request = Self::new(method, uri, headers, &[], secure);
+        request.stream = Some(stream);
+        request.length = length;
+        request
+    }
+
+    /// Every request header, in arrival order (for an app that hands the
+    /// request on to its own router).
+    pub fn headers(&self) -> &'a [(String, String)] {
+        self.headers
+    }
+
+    /// The body as a reader, whether it was buffered or is still arriving.
+    /// A streamed body can be read once; whatever the handler leaves unread
+    /// is drained after it returns.
+    pub fn body_reader(&self) -> BodyReader<'a> {
+        match self.stream {
+            Some(cell) => BodyReader::Stream(cell.borrow_mut()),
+            None => BodyReader::Buffered(self.body),
         }
     }
 
@@ -183,6 +223,21 @@ impl<'a> Request<'a> {
     }
 }
 
+/// See [`Request::body_reader`].
+pub enum BodyReader<'r> {
+    Buffered(&'r [u8]),
+    Stream(RefMut<'r, dyn Read + 'r>),
+}
+
+impl Read for BodyReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Buffered(bytes) => bytes.read(out),
+            Self::Stream(stream) => stream.read(out),
+        }
+    }
+}
+
 fn percent_decode(s: &str) -> Cow<'_, str> {
     if !s.contains(['%', '+']) {
         return Cow::Borrowed(s);
@@ -215,9 +270,6 @@ fn percent_decode(s: &str) -> Cow<'_, str> {
 pub struct Scratch {
     body: Vec<u8>,
     spare: Vec<u8>,
-    /// Address of the `body` allocation whose bytes up to the limit have
-    /// all been written (see [`Reply::fill`]).
-    zeroed: usize,
 }
 
 impl Scratch {
@@ -225,23 +277,13 @@ impl Scratch {
         let mut body = vec![0; response_limit];
         body.clear();
         Self {
-            zeroed: body.as_ptr() as usize,
             body,
             spare: Vec::new(),
         }
     }
 
     fn reply(&mut self, limit: usize) -> Reply<'_> {
-        if self.body.as_ptr() as usize != self.zeroed || self.body.capacity() < limit {
-            // A gzip reply swapped the buffers (or the limit grew): zero again.
-            self.body.clear();
-            self.body.resize(limit, 0);
-            self.body.clear();
-            self.zeroed = self.body.as_ptr() as usize;
-        }
-        let mut reply = Reply::new(&mut self.body, &mut self.spare, limit);
-        reply.zeroed = true;
-        reply
+        Reply::new(&mut self.body, &mut self.spare, limit)
     }
 }
 
@@ -249,7 +291,7 @@ impl Scratch {
 pub struct Reply<'a> {
     status: u16,
     content_type: Cow<'static, str>,
-    headers: Vec<(&'static str, String)>,
+    headers: Vec<(Cow<'static, str>, String)>,
     body: &'a mut Vec<u8>,
     /// Compression output (only used with the `gzip` feature).
     #[cfg_attr(not(feature = "gzip"), allow(dead_code))]
@@ -261,7 +303,9 @@ pub struct Reply<'a> {
     raw_len: Option<usize>,
     format: Option<Format>,
     /// Every byte of `body`'s allocation up to `limit` has been written.
-    zeroed: bool,
+    stream: Option<(Box<dyn Read + Send>, u64)>,
+    /// A body the app built itself, sent without a copy ([`Reply::owned`]).
+    owned: Option<Vec<u8>>,
 }
 
 impl<'a> Reply<'a> {
@@ -280,7 +324,8 @@ impl<'a> Reply<'a> {
             gz_us: 0,
             raw_len: None,
             format: None,
-            zeroed: false,
+            stream: None,
+            owned: None,
         }
     }
 
@@ -310,28 +355,21 @@ impl<'a> Reply<'a> {
     /// Adds a response header. One the site sets by default
     /// (`Content-Type`, `Cache-Control`, `Vary`, `Server-Timing`) is
     /// replaced rather than repeated.
-    pub fn header(&mut self, name: &'static str, value: impl Into<String>) {
-        self.headers.push((name, value.into()));
+    pub fn header(&mut self, name: impl Into<Cow<'static, str>>, value: impl Into<String>) {
+        self.headers.push((name.into(), value.into()));
     }
 
     /// Writes a pre-encoded body straight into the reply buffer, for an app
     /// whose handlers already write into a byte slice. `write` gets the
     /// whole response limit and returns the status and length it wrote.
-    /// Nothing is copied or zeroed per request.
+    /// The slice is initialized to zero on every call, reusing capacity.
     pub fn fill(
         &mut self,
         content_type: &'static str,
         write: impl FnOnce(&mut [u8]) -> (u16, usize),
     ) {
-        if self.zeroed && self.body.capacity() >= self.limit {
-            // SAFETY: Scratch wrote every byte of this allocation up to the
-            // limit (checked by address), and truncating a Vec<u8> never
-            // de-initializes memory, so all `limit` bytes are initialized.
-            unsafe { self.body.set_len(self.limit) };
-        } else {
-            self.body.clear();
-            self.body.resize(self.limit, 0);
-        }
+        self.reset_body();
+        self.body.resize(self.limit, 0);
         let (status, len) = write(&mut self.body[..]);
         self.body.truncate(len.min(self.limit));
         self.status = status;
@@ -383,7 +421,6 @@ impl<'a> Reply<'a> {
             if wire::gzip::compress(self.body, level, self.spare) {
                 self.raw_len = Some(self.body.len());
                 std::mem::swap(self.body, self.spare);
-                self.zeroed = false;
                 self.gz_us = started.elapsed().as_micros() as u64;
             }
         }
@@ -392,6 +429,7 @@ impl<'a> Reply<'a> {
     }
 
     fn encode_as<E: Encode + ?Sized>(&mut self, format: Format, status: u16, value: &E) {
+        self.reset_body();
         let started = Instant::now();
         match wire::encode(format, value, self.body, self.limit) {
             Ok(()) => {
@@ -435,22 +473,69 @@ impl<'a> Reply<'a> {
         self.fail(req, &ApiError::new(status, code, message));
     }
 
+    /// The largest body this reply may carry (`Config::response_limit`).
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
     pub fn text(&mut self, status: u16, content_type: &'static str, text: &str) {
         self.bytes(status, content_type, text.as_bytes());
     }
 
-    pub fn bytes(&mut self, status: u16, content_type: &'static str, bytes: &[u8]) {
-        self.body.clear();
+    /// Raw bytes, cut at [`Reply::limit`]: check first if that matters.
+    pub fn bytes(&mut self, status: u16, content_type: impl Into<Cow<'static, str>>, bytes: &[u8]) {
+        self.reset_body();
         let n = bytes.len().min(self.limit);
         self.body.extend_from_slice(&bytes[..n]);
         self.status = status;
-        self.content_type = Cow::Borrowed(content_type);
+        self.content_type = content_type.into();
+    }
+
+    /// A body read while it is sent (a file, say), of exactly `length`
+    /// bytes. Memory held is one 4 KiB chunk, whatever the length. If the
+    /// source ends early the connection is closed, never padded.
+    pub fn stream(
+        &mut self,
+        status: u16,
+        content_type: impl Into<Cow<'static, str>>,
+        length: u64,
+        reader: Box<dyn Read + Send>,
+    ) {
+        self.reset_body();
+        self.status = status;
+        self.content_type = content_type.into();
+        self.stream = Some((reader, length));
+    }
+
+    /// A body the app already holds (its own router built it), sent as is:
+    /// no copy into the reply buffer and no cut at [`Reply::limit`]. The
+    /// app is responsible for its size. `body()` of this reply stays empty.
+    pub fn owned(
+        &mut self,
+        status: u16,
+        content_type: impl Into<Cow<'static, str>>,
+        body: Vec<u8>,
+    ) {
+        self.reset_body();
+        self.status = status;
+        self.content_type = content_type.into();
+        self.owned = Some(body);
     }
 
     /// 204 No Content.
     pub fn empty(&mut self) {
-        self.body.clear();
+        self.reset_body();
         self.status = 204;
+    }
+
+    fn reset_body(&mut self) {
+        self.body.clear();
+        self.owned = None;
+        self.stream = None;
+        self.raw_len = None;
+        self.gz_us = 0;
+        self.enc_us = 0;
+        self.format = None;
     }
 }
 
@@ -465,6 +550,21 @@ fn body_of(e: &ApiError) -> ErrorBody {
 pub trait Service: Send + Sync + 'static {
     /// Leave `reply` untouched for "no such route" (the site sends a 404).
     fn handle(&self, req: &Request<'_>, reply: &mut Reply<'_>);
+    /// Accept a body larger than `Config::body_limit` on this route, up to
+    /// the returned size, as a stream ([`Request::body_reader`]). The
+    /// connection loop waits while the handler reads it (stalls over 10 s
+    /// end the request), so keep this for uploads, not chatty APIs.
+    fn streamed_body(&self, method: &str, path: &str) -> Option<usize> {
+        let _ = (method, path);
+        None
+    }
+    /// Origins allowed to call the API besides the site's own host and
+    /// `Config::origins`, for an app whose allowlist is data (Minicloud's
+    /// registered banks).
+    fn origin_allowed(&self, origin: &str) -> bool {
+        let _ = origin;
+        false
+    }
     /// While true, plain HTTP serves only `/trust`, `/ca` (and `/` as the
     /// trust page) and `/metrics`; everything else is 403. Asked on every
     /// plain-HTTP request, so it can change at runtime (NanaCoin's "require
@@ -476,6 +576,34 @@ pub trait Service: Send + Sync + 'static {
     fn schemas(&self) -> Vec<&'static Schema> {
         Vec::new()
     }
+    /// How cross-origin requests for `path` are treated (see [`Cors`]).
+    fn cors(&self, path: &str) -> Cors {
+        let _ = path;
+        Cors::Allowlist
+    }
+    /// The app's own fields for the `/metrics` line (store usage, queue
+    /// lengths), added after the board's. Names are Influx field keys.
+    fn metrics(&self) -> Vec<(&'static str, f64)> {
+        Vec::new()
+    }
+}
+
+/// A path's cross-origin policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cors {
+    /// Same origin, `Config::origins` and [`Service::origin_allowed`] may
+    /// call; any other origin gets 403. The site answers preflights (204).
+    /// For an app whose browser sessions carry authority (NanaCoin).
+    Allowlist,
+    /// Any origin, without credentials: every answer, refusals included,
+    /// carries `Access-Control-Allow-Origin: *`. Preflights go to the app
+    /// first and get 204 if it leaves them unanswered. For public APIs
+    /// that authenticate with bearer tokens (Mastodon clients run on any
+    /// origin).
+    Public,
+    /// No CORS: the site adds no CORS headers and refuses no origin; the
+    /// app answers `OPTIONS` itself. For same-origin pages (forms, OAuth).
+    None,
 }
 
 /// Site-wide settings. `Config::new` fills sensible board defaults.
@@ -497,6 +625,9 @@ pub struct Config {
     pub assets: &'static [Asset],
     /// Which paths are Angular routes (served `/index.html`).
     pub spa: Spa,
+    /// Path prefixes besides `/api` that the app answers (Minicloud's
+    /// `/blobs`): they skip static files and go to `Service::handle`.
+    pub app_paths: &'static [&'static str],
     /// DER of the household CA, served at `/ca` with a `/trust` page.
     pub ca_der: Option<&'static [u8]>,
     /// File name browsers save `/ca` as.
@@ -509,6 +640,8 @@ pub struct Config {
     pub cors_methods: &'static str,
     pub cors_headers: &'static str,
     pub expose_headers: &'static str,
+    /// Seconds a browser may cache a preflight answer.
+    pub cors_max_age: u32,
     /// Extra Influx tags on `/metrics`, e.g. `("bank", "s3".into())`.
     pub influx_tags: Vec<(&'static str, String)>,
     /// protobuf package name in `/api/v1/schema.proto`.
@@ -530,12 +663,14 @@ impl Config {
             response_limit: 128 * 1024,
             assets: &[],
             spa: Spa::Extensionless,
+            app_paths: &[],
             ca_der: None,
             ca_filename: "household-ca.crt",
             trust_html: None,
             cors_methods: "GET, POST, PUT, DELETE, OPTIONS",
             cors_headers: "Authorization, Content-Type, Content-Encoding, Accept",
             expose_headers: EXPOSED,
+            cors_max_age: 600,
             influx_tags: Vec::new(),
             proto_package: "miniframework",
         }
@@ -606,6 +741,7 @@ impl<S: Service> Site<S> {
         let authority = origin.split_once("://").map_or("", |(_, a)| a);
         (!host.is_empty() && authority.eq_ignore_ascii_case(host))
             || self.config.origins.iter().any(|o| o == origin)
+            || self.service.origin_allowed(origin)
     }
 
     /// Answers one parsed HTTP request.
@@ -615,12 +751,40 @@ impl<S: Service> Site<S> {
         secure: bool,
         scratch: &mut Scratch,
     ) -> Response {
+        self.respond_with(request, secure, scratch, None)
+    }
+
+    /// Whether `Service::streamed_body` takes this request's body.
+    pub fn stream_limit(&self, method: &str, uri: &str) -> Option<usize> {
+        let path = uri.split_once('?').map_or(uri, |(p, _)| p);
+        self.service.streamed_body(method, path)
+    }
+
+    /// [`Site::respond`] for a request whose body (`request.streamed`) is
+    /// read from `stream` by the handler.
+    pub fn respond_with(
+        &self,
+        request: &http::Request,
+        secure: bool,
+        scratch: &mut Scratch,
+        stream: Option<&mut dyn Read>,
+    ) -> Response {
+        let cell = stream.map(RefCell::new);
+        let cell: Option<&RefCell<dyn Read>> = cell.as_ref().map(|c| c as _);
         let began = Instant::now();
         STATS.requests.fetch_add(1, Relaxed);
         let method = request.method.as_str();
         let head = method == "HEAD";
         let (path, _) = request.uri.split_once('?').unwrap_or((&request.uri, ""));
-        let is_api = path == "/api" || path.starts_with("/api/") || path == "/metrics";
+        let owned = |prefix: &str| {
+            path.strip_prefix(prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        };
+        // An `app_paths` entry of "/" gives the app every path (an app with
+        // its own router); built-in pages and static files still go first.
+        let is_api = owned("/api")
+            || path == "/metrics"
+            || self.config.app_paths.iter().any(|p| *p != "/" && owned(p));
         // Machine health stays scrapeable in every transport mode.
         let metrics = path == "/metrics" && (method == "GET" || head);
 
@@ -667,15 +831,19 @@ impl<S: Service> Site<S> {
         }
 
         let origin = request.header("Origin");
-        let allowed = self.origin_allowed(origin, request.header("Host"));
+        let cors = self.service.cors(path);
+        let allowed =
+            cors != Cors::Allowlist || self.origin_allowed(origin, request.header("Host"));
         let req = Request {
             method: if head { "GET" } else { method },
             uri: &request.uri,
             path,
             query: request.uri.split_once('?').map_or("", |(_, q)| q),
             body: &request.body,
+            length: request.streamed.unwrap_or(request.body.len()),
             secure,
             headers: &request.headers,
+            stream: cell,
             body_limit: self.config.body_limit,
         };
         let mut reply = scratch.reply(self.config.response_limit);
@@ -688,12 +856,17 @@ impl<S: Service> Site<S> {
                 "origin_not_allowed",
                 "This origin may not call the API",
             );
-        } else if method == "OPTIONS" {
+        } else if method == "OPTIONS" && cors == Cors::Allowlist {
             reply.empty();
         } else {
-            self.builtin_api(&req, &mut reply);
+            if method != "OPTIONS" {
+                self.builtin_api(&req, &mut reply);
+            }
             if reply.status == 0 {
                 self.service.handle(&req, &mut reply);
+            }
+            if reply.status == 0 && method == "OPTIONS" && cors == Cors::Public {
+                reply.empty();
             }
             if reply.status == 0 {
                 reply.error(&req, 404, "not_found", "No such API route");
@@ -710,19 +883,13 @@ impl<S: Service> Site<S> {
         if reply.raw_len.is_some() {
             timing.push_str(&format!(", gz;dur={:.3}", reply.gz_us as f64 / 1000.0));
         }
+        let app_headers = std::mem::take(&mut reply.headers);
         let mut headers: Vec<(&str, String)> = vec![
             ("Content-Type", reply.content_type.to_string()),
             ("Cache-Control", "no-store".into()),
             ("Vary", "Accept, Origin".into()),
             ("Server-Timing", timing),
         ];
-        // The app's own value for a default header replaces it.
-        headers.retain(|(name, _)| {
-            !reply
-                .headers
-                .iter()
-                .any(|(set, _)| set.eq_ignore_ascii_case(name))
-        });
         if let Some(format) = reply.format {
             headers.push(("X-Wire-Format", format.name().into()));
         }
@@ -730,8 +897,13 @@ impl<S: Service> Site<S> {
             headers.push(("Content-Encoding", "gzip".into()));
             headers.push(("X-Raw-Length", raw.to_string()));
         }
-        if allowed && !origin.is_empty() {
-            headers.push(("Access-Control-Allow-Origin", origin.into()));
+        let cors_origin = match cors {
+            Cors::Allowlist if allowed && !origin.is_empty() => Some(origin),
+            Cors::Public => Some("*"),
+            _ => None,
+        };
+        if let Some(allow) = cors_origin {
+            headers.push(("Access-Control-Allow-Origin", allow.into()));
             headers.push((
                 "Access-Control-Allow-Methods",
                 self.config.cors_methods.into(),
@@ -744,12 +916,45 @@ impl<S: Service> Site<S> {
                 "Access-Control-Expose-Headers",
                 self.config.expose_headers.into(),
             ));
-            headers.push(("Access-Control-Max-Age", "600".into()));
-            headers.push(("Timing-Allow-Origin", origin.into()));
+            headers.push((
+                "Access-Control-Max-Age",
+                self.config.cors_max_age.to_string(),
+            ));
+            headers.push(("Timing-Allow-Origin", allow.into()));
         }
-        headers.append(&mut reply.headers);
+        // The app's own value for any header the site sets replaces it.
+        headers.retain(|(name, _)| {
+            !app_headers
+                .iter()
+                .any(|(set, _)| set.eq_ignore_ascii_case(name))
+        });
+        headers.extend(app_headers.iter().map(|(k, v)| (k.as_ref(), v.clone())));
         if reply.status >= 400 {
             STATS.errors.fetch_add(1, Relaxed);
+        }
+        if let Some((reader, length)) = reply.stream.take() {
+            let header_refs: Vec<(&str, &str)> =
+                headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            STATS.sent(length as usize);
+            return Response::new(
+                reply.status,
+                &header_refs,
+                Body::Stream(http::Stream::new(reader, length)),
+                head,
+                request.close,
+            );
+        }
+        if let Some(owned) = reply.owned.take() {
+            STATS.sent(owned.len());
+            let header_refs: Vec<(&str, &str)> =
+                headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            return Response::new(
+                reply.status,
+                &header_refs,
+                Body::Owned(owned),
+                head,
+                request.close,
+            );
         }
         // The response outlives the scratch buffer, so it gets its own copy.
         // Allocate fallibly: on a full heap answer 503, don't abort the board.
@@ -801,13 +1006,27 @@ impl<S: Service> Site<S> {
         let body: &'static [u8] = match status {
             413 => b"{\"error\":\"too_large\",\"message\":\"The request body is larger than this board accepts\"}",
             431 => b"{\"error\":\"headers_too_large\",\"message\":\"The request headers are larger than this board accepts\"}",
+            408 => b"{\"error\":\"timeout\",\"message\":\"The request body stopped arriving\"}",
             _ => b"{\"error\":\"invalid_http_request\",\"message\":\"The request is not valid HTTP/1.1\"}",
         };
         let mut headers = vec![
             ("Content-Type", "application/json"),
             ("Cache-Control", "no-store"),
         ];
-        if !origin.is_empty() && self.origin_allowed(origin, header("Host")) {
+        let path = complete
+            .then_some(parsed.path)
+            .flatten()
+            .map_or("", |uri| uri.split_once('?').map_or(uri, |(p, _)| p));
+        let cors = self.service.cors(path);
+        if cors == Cors::Public {
+            headers.extend([
+                ("Access-Control-Allow-Origin", "*"),
+                ("Access-Control-Expose-Headers", self.config.expose_headers),
+            ]);
+        } else if cors == Cors::Allowlist
+            && !origin.is_empty()
+            && self.origin_allowed(origin, header("Host"))
+        {
             headers.extend([
                 ("Access-Control-Allow-Origin", origin),
                 ("Access-Control-Expose-Headers", self.config.expose_headers),
@@ -866,7 +1085,11 @@ impl<S: Service> Site<S> {
             "/metrics" => reply.text(
                 200,
                 "text/plain; version=0.0.4; charset=utf-8",
-                &sys::influx_line(&self.sysinfo(), &self.config.influx_tags),
+                &sys::influx_line_with(
+                    &self.sysinfo(),
+                    &self.config.influx_tags,
+                    &self.service.metrics(),
+                ),
             ),
             "/api/v1/schema" => reply.wire(req, &self.schema()),
             "/api/v1/log" | "/api/v1/log.txt" => {

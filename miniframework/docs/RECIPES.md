@@ -171,6 +171,42 @@ NanaCoin (`nanacoin_rs/src/server.rs`) is the worked example, including
 `Config` CORS lists for its own headers and `Spa::Routes` so unknown paths
 are 404s instead of the app shell.
 
+## Choose transports: HTTP, HTTPS, HTTP/2
+
+Cargo features, so a board carries only the code it uses:
+
+| Features | Serves | For |
+|---|---|---|
+| none (`default-features = false`) | HTTP | the smallest boards; no TLS server code linked |
+| `tls` (in the defaults) | HTTP + HTTPS | boards with room for TLS (each session holds ~25 KiB) |
+| `http2` (implies `tls`) | + HTTP/2 | boards where cold page loads hurt |
+
+HTTP/2 is offered by ALPN in the TLS handshake; browsers pick it when they
+can and fall back to HTTP/1.1. Its point is handshakes: a browser opens up
+to six HTTP/1.1 connections at once and pays a full TLS handshake (about a
+second on these boards) for each; over HTTP/2 the whole page shares one.
+It does not raise throughput (the link is the limit). Streamed uploads
+(`Service::streamed_body`) work over HTTP/2 too, given a `content-length`:
+each may run at most 16 KiB ahead of the handler (the window the board
+advertises). `Limits::h2_streams` bounds requests per connection.
+
+At runtime, `limits.tls_clients = 0` turns HTTPS off in a build that has it.
+Built with `http2`, the desktop also speaks cleartext HTTP/2 to clients with
+prior knowledge, which is how it is tested. Measure a page either way:
+
+```sh
+cd bench && uv run pageload --url https://board.local --ca ../apps/housemetrics/certs/household-ca.crt
+```
+
+Apps expose the choice: `make firmware TRANSPORT=http|https|http2`
+(housemetrics, Minicloud), `make firmware BOARD=s3 HTTP2=1` (NanaCoin, which
+always keeps HTTPS).
+
+Whatever the transport, the loop accepts a connection only when it has a
+slot for it (or an idle one to replace); the rest wait in the listen backlog.
+Accepting and then dropping showed up in browsers as failed loads and
+reloads, and on HTTPS it wasted a handshake first.
+
 ## Require HTTPS
 
 Return true from `Service::https_required` (it is asked per request, so a
@@ -248,3 +284,77 @@ breaks: `log::warn!` for anything surprising, with numbers.
 - Browser decoding: `make test-web` checks the TypeScript decoders against
   bytes the Rust encoders wrote.
 - Whole UI: `make run-bundle`, then `cd bench && uv run ui-smoke --url http://127.0.0.1:8080`.
+
+### Safety regression tests and board ownership
+
+The portable crate forbids unsafe Rust. The ESP-IDF module is the explicit
+exception for C ABI calls. This does not mean
+dependencies contain no unsafe code: use their safe ownership APIs wherever
+they preserve the required behavior.
+
+The board platform now consumes the HAL temperature token:
+`board.platform(peripherals.temp_sensor)`. A failed sensor remains absent
+from sysinfo and does not stop the web service. The driver is locked and
+released by the HAL. A status light owns its output driver:
+`Led::s2_mini(peripherals.pins.gpio15, "housemetrics")?`, or
+`Led::new(pin, active_high, phrase)?`. An integer GPIO number cannot prove
+ownership. These replace the previous no-argument platform and phrase-only
+LED constructor; available consumers have been migrated.
+
+`Reply::fill` initializes its entire slice to zero on each call, using the
+existing allocation. It no longer treats allocation capacity/address as proof
+of initialization. Every response body setter replaces all previous body and
+compression state. Log cursors restart their epoch before u32 exhaustion;
+a future cursor returns retained lines from the current epoch.
+
+Hostile tests cover capacity/limit changes, body replacement, huge HTTP
+lengths, stable TLS retry pointers/lengths, ticket setup failures, RTC corrupt
+metadata and wrap at every byte position, decoder truncations and mutations,
+HTTP/2 framing/window violations, and gzip flags/header CRC/body CRC/ISIZE,
+expansion limits and trailing members. Browser tests also cover invalid UTF-8,
+impossible lengths, invalid CBOR breaks/chunks, trailing values and prototype
+keys. Run `make check` for the feature matrix and browser/tool checks.
+
+For a targeted memory check, install nightly Miri and run from the crate:
+
+```sh
+cargo +nightly miri test --target x86_64-unknown-linux-gnu --lib fill_initializes_every_byte_across_capacity_and_limit_changes
+cargo +nightly miri test --target x86_64-unknown-linux-gnu --lib tls_retry_keeps_pointer_and_length_when_output_grows
+```
+
+Both targeted tests passed in this audit. An isolated reproduction of the old
+capacity/address-based buffer initialization failed under Miri: bytes beyond
+the previous short fill were uninitialized when the next fill exposed them.
+The ticket failure tests exercise the Rust fallback with a simulated SDK;
+they do not inject failures into the real C implementation.
+
+Remaining unsafe operations, all within `src/esp/`:
+
+| Boundary | Why it remains; enforced contract |
+|---|---|
+| TLS context/init/handshake/read/write/delete and ALPN | svc 0.52.1 has no asynchronous server negotiation API. Blocking negotiation would defeat bounded concurrent handshakes. A private non-Clone `TlsSession` owns the raw context and drops before TCP; only that owner implements Send, never Sync. SDK init failures, timeouts and failed channel handoffs drop the owner. |
+| TLS tickets | IDF 5.5.3 frees its ticket context without clearing the pointer on some initialization failures. `tls_config::optional_init` discards failed output before adding certs/ALPN; success retains the context for firmware lifetime. |
+| C log callback/vsnprintf/registration | ESP-IDF supplies a C format and va_list; safe Rust cannot interpret that variadic ABI. The callback uses a local bounded buffer, safe UTF-8 conversion and fallible std::io console output; no second variadic printf is needed. |
+| NVS custom partition initialization | svc's custom `take` may erase on NO_FREE_PAGES/NEW_VERSION_FOUND. Non-erasing initialization must succeed first. The pair is serialized and an owner is retained so returned clone drops cannot invalidate the preflight. There is no safe non-erasing custom constructor in the pinned svc. Default NVS still uses `take_with(false)`. |
+| Wi-Fi power setting/AP client count | No corresponding safe method was found in the pinned svc; local initialized outputs and SDK error results are bounded by the radio lifecycle. Address/MAC/AP information queries use the owned radio's safe methods. |
+| Heap/flash/version/stack queries | SDK-only query APIs: initialized bounded outputs; null selects the default flash/current task where documented; version is SDK-owned static NUL-terminated text. Flash query errors yield zero. |
+| Partition iteration | SDK owns iterator/pointers. RAII releases even on early exit; entries are copied before advancing, labels decoded only within their fixed arrays, exhausted iterators replaced with null. |
+| Core-dump check/summary/erase | SDK-only configured-partition API. Initialized summary, bounded task/backtrace decoding; erase only after reporting a readable summary, and report erase failures. Unread dumps are retained. |
+
+Board memory: TLS retries retain at most 1024 bytes per TLS connection,
+allocated only for TLS sessions (S2: at most three served plus one pending and
+the bounded handoff queue). HTTP/2 retains one 12-byte ALPN pointer array per
+server task on 32-bit targets so handed-off sessions cannot outlive a stack
+array. NVS caches one small map entry/name/Arc per opened custom partition.
+RTC recovery allocates one bounded byte vector, removing the former vector of
+usize indices. Its 2048-byte retained array uses safely indexed AtomicU32
+load/store operations (no read-modify-write instructions), with SeqCst word
+ordering and a separate non-retained lock. RTC is RAM, not MMIO. The audited
+S2 image places the array at 0x50000000 in a 2048-byte, four-byte-aligned
+`.rtc_noinit` section. Its atomic shims use `l32i.n` and `s32i.n`, with memory
+barriers and interrupt protection; the record lock lives in ordinary RAM.
+Recheck placement and disassembly when changing chip/toolchain.
+Gzip retains the existing bounded growing-output strategy and
+approximately 11 KiB decoder state. Verify actual heap numbers on hardware
+before deployment; desktop tests/Miri cannot execute ESP-IDF FFI or prove the
+hardware memory model, SDK thread safety or real allocation-failure behavior.

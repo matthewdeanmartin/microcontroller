@@ -3,7 +3,7 @@
 //! client. Invalid framing always closes the connection, so unread bytes
 //! cannot become a second, ambiguous request.
 use std::{
-    io::{self, Write},
+    io::{self, Read, Write},
     time::{Duration, Instant},
 };
 
@@ -20,14 +20,54 @@ pub const TURN_BUDGET: usize = 16 * 1024;
 
 pub const HEADER_LIMIT: usize = 4096;
 
+/// Keeps the address, contents and length of a nonblocking TLS write stable
+/// until it succeeds. HTTP/2 may append/reallocate its output between retries.
+/// Allocates at most one WRITE_CHUNK_LIMIT buffer per TLS connection.
+#[cfg(any(test, all(feature = "tls", feature = "esp32", target_os = "espidf")))]
+pub(crate) struct TlsWriteRetry(Vec<u8>);
+
+#[cfg(any(test, all(feature = "tls", feature = "esp32", target_os = "espidf")))]
+impl TlsWriteRetry {
+    pub fn new() -> Self {
+        Self(Vec::with_capacity(WRITE_CHUNK_LIMIT))
+    }
+
+    pub fn write(
+        &mut self,
+        bytes: &[u8],
+        write: impl FnOnce(&[u8]) -> io::Result<usize>,
+    ) -> io::Result<usize> {
+        if self.0.is_empty() {
+            self.0
+                .extend_from_slice(&bytes[..bytes.len().min(WRITE_CHUNK_LIMIT)]);
+        } else if !bytes.starts_with(&self.0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TLS retry changed pending bytes",
+            ));
+        }
+        let result = write(&self.0);
+        if !matches!(&result, Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted))
+        {
+            self.0.clear();
+        }
+        result
+    }
+}
+
 #[derive(Debug)]
 pub struct Request {
     pub method: String,
     pub uri: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// Bytes of input this request occupies. For a streamed body, only the
+    /// head: the body is read separately.
     pub consumed: usize,
     pub close: bool,
+    /// A body too large to buffer that the app accepts as a stream: its
+    /// declared length. `body` is then empty.
+    pub streamed: Option<usize>,
 }
 
 impl Request {
@@ -40,7 +80,36 @@ impl Request {
     }
 }
 
+/// The interim answer to `Expect: 100-continue`.
+pub const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
+
+/// Whether `input` holds a complete HTTP/1.1 head that asks for
+/// `100 Continue` before its body (curl does for bodies over 1 KiB and
+/// waits a second for it otherwise).
+pub fn expects_continue(input: &[u8]) -> bool {
+    let mut headers = [httparse::EMPTY_HEADER; 32];
+    let mut parsed = httparse::Request::new(&mut headers);
+    matches!(parsed.parse(input), Ok(httparse::Status::Complete(_)))
+        && parsed.version == Some(1)
+        && parsed.headers.iter().any(|h| {
+            h.name.eq_ignore_ascii_case("Expect")
+                && std::str::from_utf8(h.value)
+                    .is_ok_and(|v| v.trim().eq_ignore_ascii_case("100-continue"))
+        })
+}
+
 pub fn parse(input: &[u8], body_limit: usize) -> Result<Option<Request>, u16> {
+    parse_streaming(input, body_limit, &|_, _| None)
+}
+
+/// [`parse`], except that a body over `body_limit` is accepted when
+/// `stream(method, uri)` allows that many bytes: the request is returned as
+/// soon as its head is complete, with [`Request::streamed`] set.
+pub fn parse_streaming(
+    input: &[u8],
+    body_limit: usize,
+    stream: &dyn Fn(&str, &str) -> Option<usize>,
+) -> Result<Option<Request>, u16> {
     let mut headers = [httparse::EMPTY_HEADER; 32];
     let mut parsed = httparse::Request::new(&mut headers);
     let start = match parsed.parse(input).map_err(|_| 400u16)? {
@@ -78,7 +147,10 @@ pub fn parse(input: &[u8], body_limit: usize) -> Result<Option<Request>, u16> {
         if header.name.eq_ignore_ascii_case("Transfer-Encoding") {
             return Err(400);
         }
-        if header.name.eq_ignore_ascii_case("Expect") {
+        // `100-continue` is answered by the connection loop
+        // ([`expects_continue`]); no other expectation exists.
+        if header.name.eq_ignore_ascii_case("Expect") && !value.eq_ignore_ascii_case("100-continue")
+        {
             return Err(417);
         }
         if header.name.eq_ignore_ascii_case("Host") {
@@ -95,11 +167,7 @@ pub fn parse(input: &[u8], body_limit: usize) -> Result<Option<Request>, u16> {
             if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(400);
             }
-            let n = value.parse::<usize>().map_err(|_| 413u16)?;
-            if n > body_limit {
-                return Err(413);
-            }
-            length = Some(n);
+            length = Some(value.parse::<usize>().map_err(|_| 413u16)?);
         }
     }
     if parsed.version == Some(1) && !host {
@@ -108,7 +176,20 @@ pub fn parse(input: &[u8], body_limit: usize) -> Result<Option<Request>, u16> {
     if matches!(method, "POST" | "PATCH" | "PUT") && length.is_none() {
         return Err(411);
     }
-    let end = start + length.unwrap_or(0);
+    let mut streamed = None;
+    if let Some(n) = length.filter(|&n| n > body_limit) {
+        match stream(method, uri) {
+            Some(max) if n <= max => streamed = Some(n),
+            _ => return Err(413),
+        }
+    }
+    let end = start
+        .checked_add(if streamed.is_some() {
+            0
+        } else {
+            length.unwrap_or(0)
+        })
+        .ok_or(413u16)?;
     if input.len() < end {
         return Ok(None);
     }
@@ -128,19 +209,101 @@ pub fn parse(input: &[u8], body_limit: usize) -> Result<Option<Request>, u16> {
         body: input[start..end].to_vec(),
         consumed: end,
         close,
+        streamed,
     }))
 }
 
 pub enum Body {
     Owned(Vec<u8>),
     Flash(&'static [u8]),
+    /// Read as it is sent (a file, say), [`STREAM_CHUNK`] bytes at a time.
+    Stream(Stream),
 }
 
-impl AsRef<[u8]> for Body {
-    fn as_ref(&self) -> &[u8] {
+/// Bytes a streamed response body holds at once.
+pub const STREAM_CHUNK: usize = 4096;
+
+/// A response body read while it is sent, with a declared length.
+pub struct Stream {
+    reader: Box<dyn Read + Send>,
+    remaining: u64,
+    buf: Vec<u8>,
+    at: usize,
+    failed: bool,
+}
+
+impl Stream {
+    pub fn new(reader: Box<dyn Read + Send>, length: u64) -> Self {
+        let mut stream = Self {
+            reader,
+            remaining: length,
+            buf: Vec::new(),
+            at: 0,
+            failed: false,
+        };
+        stream.refill();
+        stream
+    }
+
+    fn refill(&mut self) {
+        self.buf.clear();
+        self.at = 0;
+        let want = (self.remaining.min(STREAM_CHUNK as u64)) as usize;
+        if want == 0 {
+            return;
+        }
+        self.buf.resize(want, 0);
+        let mut got = 0;
+        while got < want {
+            match self.reader.read(&mut self.buf[got..]) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        if got == 0 {
+            // The source ended (or failed) before its declared length: the
+            // connection must close rather than send a short body.
+            self.failed = true;
+        }
+        self.buf.truncate(got);
+        self.remaining -= got as u64;
+    }
+
+    pub(crate) fn pending(&self) -> &[u8] {
+        &self.buf[self.at..]
+    }
+
+    #[cfg_attr(not(feature = "http2"), allow(dead_code))]
+    pub(crate) fn failed(&self) -> bool {
+        self.failed
+    }
+
+    pub(crate) fn consume(&mut self, count: usize) {
+        self.at += count;
+        if self.at >= self.buf.len() && self.remaining > 0 {
+            self.refill();
+        }
+    }
+}
+
+impl Body {
+    /// Length on the wire.
+    pub(crate) fn len(&self) -> u64 {
+        match self {
+            Self::Owned(b) => b.len() as u64,
+            Self::Flash(b) => b.len() as u64,
+            Self::Stream(s) => s.remaining + s.buf.len() as u64,
+        }
+    }
+
+    /// The in-memory part (empty for a stream).
+    pub(crate) fn bytes(&self) -> &[u8] {
         match self {
             Self::Owned(b) => b,
             Self::Flash(b) => b,
+            Self::Stream(_) => &[],
         }
     }
 }
@@ -155,10 +318,16 @@ pub struct Response {
     last_progress: Instant,
     pub close: bool,
     pub status: u16,
+    /// The headers as given (for HTTP/2, which frames them itself).
+    headers: Vec<(String, String)>,
+    /// The `Content-Length` sent (also for HEAD), `None` for 304.
+    length: Option<u64>,
 }
 
 impl Response {
     pub fn new(status: u16, headers: &[(&str, &str)], body: Body, head: bool, close: bool) -> Self {
+        let mut kept = Vec::with_capacity(headers.len());
+        let length = (status != 304).then(|| body.len());
         let mut prefix = format!("HTTP/1.1 {status} {}\r\n", reason(status)).into_bytes();
         for &(name, value) in headers {
             if name.eq_ignore_ascii_case("Content-Length")
@@ -170,13 +339,12 @@ impl Response {
                 continue;
             }
             prefix.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+            kept.push((name.to_owned(), value.to_owned()));
         }
         // 304 has no message body; omit Content-Length (which otherwise would
         // have to describe the selected representation, not this empty reply).
         if status != 304 {
-            prefix.extend_from_slice(
-                format!("Content-Length: {}\r\n", body.as_ref().len()).as_bytes(),
-            );
+            prefix.extend_from_slice(format!("Content-Length: {}\r\n", body.len()).as_bytes());
         }
         if close {
             prefix.extend_from_slice(b"Connection: close\r\n");
@@ -187,8 +355,8 @@ impl Response {
         } else {
             body
         };
-        let skip = body.as_ref().len().min(WRITE_CHUNK_LIMIT);
-        prefix.extend_from_slice(&body.as_ref()[..skip]);
+        let skip = body.bytes().len().min(WRITE_CHUNK_LIMIT);
+        prefix.extend_from_slice(&body.bytes()[..skip]);
         Self {
             prefix,
             body,
@@ -197,7 +365,16 @@ impl Response {
             last_progress: Instant::now(),
             close,
             status,
+            headers: kept,
+            length,
         }
+    }
+
+    /// Status, headers (without framing ones), `Content-Length` and body,
+    /// for a transport that frames them itself (HTTP/2). A HEAD or 304
+    /// response has an empty body here.
+    pub fn into_parts(self) -> (u16, Vec<(String, String)>, Option<u64>, Body) {
+        (self.status, self.headers, self.length, self.body)
     }
 
     /// Nonblocking writes of up to [`TURN_BUDGET`] bytes (in
@@ -206,6 +383,9 @@ impl Response {
     /// `now` is supplied by the caller so stalled/slow peers can be tested
     /// without sleeping. Returns true only when the complete reply was sent.
     pub fn send(&mut self, writer: &mut impl Write, now: Instant) -> io::Result<bool> {
+        if self.failed() {
+            return Err(io::Error::other("response body source ended early"));
+        }
         if self.next().is_empty() {
             return Ok(true);
         }
@@ -220,6 +400,9 @@ impl Response {
                     self.advance(n);
                     self.last_progress = now;
                     budget = budget.saturating_sub(n);
+                    if self.failed() {
+                        return Err(io::Error::other("response body source ended early"));
+                    }
                 }
                 Err(e)
                     if matches!(
@@ -236,17 +419,27 @@ impl Response {
     }
 
     pub fn next(&self) -> &[u8] {
-        if self.sent < self.prefix.len() {
-            let rest = &self.prefix[self.sent..];
-            &rest[..rest.len().min(WRITE_CHUNK_LIMIT)]
+        let rest = if self.sent < self.prefix.len() {
+            &self.prefix[self.sent..]
+        } else if let Body::Stream(stream) = &self.body {
+            stream.pending()
         } else {
-            let rest = &self.body.as_ref()[self.skip + self.sent - self.prefix.len()..];
-            &rest[..rest.len().min(WRITE_CHUNK_LIMIT)]
-        }
+            &self.body.bytes()[self.skip + self.sent - self.prefix.len()..]
+        };
+        &rest[..rest.len().min(WRITE_CHUNK_LIMIT)]
     }
 
     pub fn advance(&mut self, count: usize) {
+        let in_prefix = self.sent < self.prefix.len();
         self.sent += count;
+        if let (false, Body::Stream(stream)) = (in_prefix, &mut self.body) {
+            stream.consume(count);
+        }
+    }
+
+    /// A streamed body's source ended before its declared length.
+    pub fn failed(&self) -> bool {
+        matches!(&self.body, Body::Stream(s) if s.failed)
     }
 
     pub fn retained_bytes(&self) -> usize {
@@ -254,6 +447,7 @@ impl Response {
             + match &self.body {
                 Body::Owned(bytes) => bytes.len(),
                 Body::Flash(_) => 0,
+                Body::Stream(stream) => stream.buf.capacity(),
             }
     }
 }
@@ -267,6 +461,7 @@ fn reason(status: u16) -> &'static str {
         304 => "Not Modified",
         400 => "Bad Request",
         401 => "Unauthorized",
+        408 => "Request Timeout",
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
@@ -290,6 +485,56 @@ fn reason(status: u16) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn maximum_content_length_cannot_overflow_head_length() {
+        let input = format!(
+            "POST / HTTP/1.1\r\nHost: b\r\nContent-Length: {}\r\n\r\n",
+            usize::MAX
+        );
+        assert_eq!(super::parse(input.as_bytes(), usize::MAX).unwrap_err(), 413);
+    }
+
+    #[test]
+    fn tls_retry_keeps_pointer_and_length_when_output_grows() {
+        let mut retry = super::TlsWriteRetry::new();
+        let mut pointer = 0usize;
+        for input in [b"abc".as_slice(), b"abcdef", b"abcdefgh"] {
+            let result = retry.write(input, |pending| {
+                assert_eq!(pending, b"abc");
+                if pointer == 0 {
+                    pointer = pending.as_ptr() as usize;
+                }
+                assert_eq!(pending.as_ptr() as usize, pointer);
+                Err(std::io::ErrorKind::WouldBlock.into())
+            });
+            assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::WouldBlock);
+        }
+        assert!(retry
+            .write(b"changed", |_| panic!("invalid retry reached TLS"))
+            .is_err());
+        assert_eq!(
+            retry.write(b"abcdef", |pending| Ok(pending.len())).unwrap(),
+            3
+        );
+        assert_eq!(
+            retry
+                .write(b"def", |pending| {
+                    assert_eq!(pending, b"def");
+                    Ok(1)
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            retry
+                .write(b"ef", |pending| {
+                    assert_eq!(pending, b"ef");
+                    Ok(2)
+                })
+                .unwrap(),
+            2
+        );
+    }
     use super::*;
 
     #[test]
@@ -524,5 +769,88 @@ mod tests {
         assert!(head.ends_with(b"Content-Length: 5\r\n\r\n"));
         let cached = wire(Response::new(304, &[], Body::Flash(b"hello"), false, false));
         assert_eq!(cached, b"HTTP/1.1 304 Not Modified\r\n\r\n");
+    }
+
+    #[test]
+    fn a_streamed_body_returns_at_the_end_of_the_head() {
+        let head = b"PUT /blobs/a HTTP/1.1\r\nHost: b\r\nContent-Length: 100000\r\n\r\nfirst";
+        // Without a streaming route it is too large.
+        assert_eq!(parse(head, 1024).unwrap_err(), 413);
+        let allow =
+            |method: &str, uri: &str| (method == "PUT" && uri == "/blobs/a").then_some(200_000);
+        let request = parse_streaming(head, 1024, &allow).unwrap().unwrap();
+        assert_eq!(request.streamed, Some(100_000));
+        assert!(request.body.is_empty());
+        assert_eq!(
+            &head[request.consumed..],
+            b"first",
+            "the body starts after the head"
+        );
+        // Over the route's own limit, or another route: refused.
+        let big = b"PUT /blobs/a HTTP/1.1\r\nHost: b\r\nContent-Length: 300000\r\n\r\n";
+        assert_eq!(parse_streaming(big, 1024, &allow).unwrap_err(), 413);
+        let other = b"PUT /blobs/b HTTP/1.1\r\nHost: b\r\nContent-Length: 100000\r\n\r\n";
+        assert_eq!(parse_streaming(other, 1024, &allow).unwrap_err(), 413);
+        // Small bodies are still buffered, streaming route or not.
+        let small = b"PUT /blobs/a HTTP/1.1\r\nHost: b\r\nContent-Length: 2\r\n\r\nok";
+        let request = parse_streaming(small, 1024, &allow).unwrap().unwrap();
+        assert_eq!((request.streamed, &request.body[..]), (None, &b"ok"[..]));
+    }
+
+    fn drain(mut response: Response) -> io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        while !response.send(&mut out, Instant::now())? {}
+        Ok(out)
+    }
+
+    #[test]
+    fn a_streamed_response_sends_exactly_its_length_in_chunks() {
+        let data: Vec<u8> = (0..10_000u32).map(|i| i as u8).collect();
+        let body = Body::Stream(Stream::new(Box::new(io::Cursor::new(data.clone())), 10_000));
+        let response = Response::new(200, &[("Content-Type", "image/jpeg")], body, false, false);
+        assert!(
+            response.retained_bytes() < 4096 + 512,
+            "one chunk held, not the file"
+        );
+        let out = drain(response).unwrap();
+        let split = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        assert!(String::from_utf8_lossy(&out[..split]).contains("Content-Length: 10000\r\n"));
+        assert_eq!(&out[split..], &data[..]);
+        // HEAD: the length, no bytes, and the source is never read.
+        struct Untouchable;
+        impl Read for Untouchable {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Ok(0)
+            }
+        }
+        let head = Response::new(
+            200,
+            &[],
+            Body::Stream(Stream::new(Box::new(io::Cursor::new(vec![1; 7])), 7)),
+            true,
+            false,
+        );
+        let out = drain(head).unwrap();
+        assert!(out.ends_with(b"Content-Length: 7\r\n\r\n"));
+        let empty = Response::new(
+            200,
+            &[],
+            Body::Stream(Stream::new(Box::new(Untouchable), 0)),
+            false,
+            false,
+        );
+        assert!(drain(empty)
+            .unwrap()
+            .ends_with(b"Content-Length: 0\r\n\r\n"));
+    }
+
+    #[test]
+    fn a_source_that_ends_early_fails_instead_of_sending_a_short_body() {
+        let body = Body::Stream(Stream::new(
+            Box::new(io::Cursor::new(vec![7u8; 6000])),
+            9000,
+        ));
+        let response = Response::new(200, &[], body, false, false);
+        assert!(drain(response).is_err());
     }
 }

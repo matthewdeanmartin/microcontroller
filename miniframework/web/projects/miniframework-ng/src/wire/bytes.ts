@@ -1,6 +1,6 @@
 // Shared helpers for the binary decoders.
 
-const textDecoder = new TextDecoder('utf-8');
+const textDecoder = new TextDecoder('utf-8', { fatal: true });
 
 /**
  * UTF-8 to string. Short ASCII strings (most keys and tag values) are
@@ -31,7 +31,9 @@ export class Cursor {
   }
 
   need(n: number): void {
-    if (this.pos + n > this.bytes.length) throw new WireError('input ended early');
+    if (!Number.isSafeInteger(n) || n < 0 || n > this.bytes.length - this.pos) {
+      throw new WireError('invalid or truncated length');
+    }
   }
 
   u8(): number {
@@ -41,6 +43,7 @@ export class Cursor {
 
   /** Big-endian unsigned integer of 1, 2, 4 or 8 bytes, as a Number. */
   uintBE(n: number): number {
+    if (![1, 2, 4, 8].includes(n)) throw new WireError('invalid integer width');
     this.need(n);
     const v = this.view;
     const p = this.pos;

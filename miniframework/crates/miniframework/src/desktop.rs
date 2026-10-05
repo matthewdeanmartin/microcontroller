@@ -44,7 +44,12 @@ pub fn serve<S: Service>(
     let mut last_busy = std::time::Instant::now();
     loop {
         let mut busy = false;
-        while let Ok((stream, _)) = listener.accept() {
+        // Accept only with a slot to put it in: the rest wait in the
+        // listen backlog rather than being accepted and dropped.
+        while mux.has_room(false) {
+            let Ok((stream, _)) = listener.accept() else {
+                break;
+            };
             stream.set_nonblocking(true)?;
             stream.set_nodelay(true)?;
             mux.add(stream);
@@ -66,3 +71,9 @@ pub fn serve<S: Service>(
 pub fn init_logging() {
     crate::logbuf::install(256 * 1024);
 }
+
+#[cfg(feature = "desktop-tls")]
+#[path = "desktop_tls.rs"]
+mod tls;
+#[cfg(feature = "desktop-tls")]
+pub use tls::{serve_https, DesktopConn, Https};

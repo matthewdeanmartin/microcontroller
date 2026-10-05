@@ -6,6 +6,7 @@ const MAX_DEPTH = 64;
 export function decodeMsgPack(bytes: Uint8Array): unknown {
   const c = new Cursor(bytes);
   const value = read(c, 0);
+  if (c.pos !== bytes.length) throw new WireError('trailing MessagePack data');
   return value;
 }
 
@@ -121,7 +122,7 @@ function array(c: Cursor, n: number, depth: number): unknown[] {
 
 function map(c: Cursor, n: number, depth: number): Record<string, unknown> {
   c.need(n * 2);
-  const out: Record<string, unknown> = {};
+  const out: Record<string, unknown> = Object.create(null);
   for (let i = 0; i < n; i++) {
     const key = read(c, depth + 1);
     out[String(key)] = read(c, depth + 1);

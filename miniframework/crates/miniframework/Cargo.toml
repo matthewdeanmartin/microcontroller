@@ -9,7 +9,13 @@ license = "MIT"
 publish = false
 
 [features]
-default = ["gzip"]
+# Transports: plain HTTP is always there. `tls` adds HTTPS (the boards'
+# esp-tls server sessions; without it no TLS server code is linked), and
+# `http2` adds HTTP/2 on top (ALPN over TLS on boards; cleartext
+# prior-knowledge h2c anywhere, for tests and tools).
+default = ["gzip", "tls"]
+tls = []
+http2 = ["tls", "dep:fluke-hpack"]
 # Dynamic gzip of API responses and gzip request bodies (miniz_oxide).
 gzip = ["dep:miniz_oxide"]
 # The ESP-IDF runner: Wi-Fi, esp-tls handshakes, mDNS, SNTP, NVS, HTTP client.
@@ -18,6 +24,9 @@ esp32 = ["dep:esp-idf-svc"]
 # sdkconfig sets CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH and that have a
 # `coredump` partition: without them ESP-IDF has no core-dump functions.
 coredump = ["esp32"]
+# HTTPS on the desktop runner (rustls), with ALPN h2 when `http2` is on:
+# local development and tests of the boards' HTTPS behaviour.
+desktop-tls = ["tls", "dep:rustls", "dep:rustls-pemfile"]
 
 [dependencies]
 httparse = "1.10"
@@ -27,6 +36,9 @@ getrandom = "0.2"
 crc32fast = "1.4"
 log = "0.4"
 miniz_oxide = { version = "0.8", optional = true }
+fluke-hpack = { version = "0.3", optional = true }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = { version = "2", optional = true }
 
 [target.'cfg(target_os = "espidf")'.dependencies]
 esp-idf-svc = { version = "=0.52.1", optional = true, features = ["experimental"] }

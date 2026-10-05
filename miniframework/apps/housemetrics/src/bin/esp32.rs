@@ -25,10 +25,10 @@ const HOSTNAME: &str = match option_env!("HOUSEMETRICS_HOSTNAME") {
 };
 
 /// tools/boardsafe refuses to write an image whose marker names another
-/// board (see boards.py). A build with another HOUSEMETRICS_HOSTNAME needs
-/// its own registry entry and marker.
+/// board (see boards.py). build.rs makes it from HOUSEMETRICS_BOARD and
+/// HOUSEMETRICS_HOSTNAME.
 #[used]
-static BOARD_MARKER: &str = "HOUSEMETRICS-BOARD:s2:housemetrics.local;";
+static BOARD_MARKER: &str = env!("HOUSEMETRICS_MARKER");
 
 fn main() {
     if let Err(e) = run() {
@@ -46,19 +46,27 @@ fn run() -> Result<(), esp::Error> {
             password: env!("HOUSEMETRICS_WIFI_PASSWORD"),
             hostname: HOSTNAME,
             instance: "housemetrics",
-            cert_pem: concat!(include_str!("../../certs/housemetrics.crt"), "\0").as_bytes(),
-            key_pem: concat!(include_str!("../../certs/housemetrics.key"), "\0").as_bytes(),
+            // certs/<hostname>.crt and .key, copied by build.rs.
+            cert_pem: concat!(include_str!(concat!(env!("OUT_DIR"), "/server.crt")), "\0")
+                .as_bytes(),
+            key_pem: concat!(include_str!(concat!(env!("OUT_DIR"), "/server.key")), "\0")
+                .as_bytes(),
             ca_pem: Some(concat!(include_str!("../../certs/household-ca.crt"), "\0").as_bytes()),
             limits: Limits::small_board(),
             psram_stacks: true,
             network_core: None,
             app_core: None,
             serve_stack: 32 * 1024,
+            wait_for_wifi: true,
             ntp_server: None,
+            saved_wifi: None,
+            setup_network: None,
+            force_setup: false,
+            mdns_https_path: "/",
             // HOUSEMETRICS_STATUS_LED=off for a board without the S2 Mini's LED.
             led: match option_env!("HOUSEMETRICS_STATUS_LED") {
                 Some("off") => None,
-                _ => Some(Led::s2_mini("housemetrics")),
+                _ => Some(Led::s2_mini(peripherals.pins.gpio15, "housemetrics")?),
             },
         },
         peripherals.modem,
@@ -84,7 +92,7 @@ fn run() -> Result<(), esp::Error> {
     if let Some(extra) = option_env!("HOUSEMETRICS_ORIGINS") {
         config.origins.extend(extra.split(',').map(str::to_string));
     }
-    let site = Site::new(config, app, board.platform());
+    let site = Site::new(config, app, board.platform(peripherals.temp_sensor));
     let mut last = Instant::now() - Duration::from_secs(60);
     board.serve(site, move |site| {
         if last.elapsed() >= Duration::from_secs(10) {

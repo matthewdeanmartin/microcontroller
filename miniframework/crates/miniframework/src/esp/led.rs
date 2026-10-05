@@ -4,6 +4,7 @@
 use super::{reset_reason, spawn_worker, Led};
 use crate::status::{Light, State, SIGNALS};
 use crate::sys::STATS;
+use esp_idf_svc::hal::gpio::Level;
 use esp_idf_svc::sys;
 use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
 use std::time::Duration;
@@ -12,9 +13,14 @@ use std::time::Duration;
 const ERROR_SHOWN_MS: u64 = 10_000;
 
 static STATE: AtomicU8 = AtomicU8::new(0);
+/// A light was started (boards without one report no status).
+static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The state the light is showing, for `/api/v1/sys`.
 pub fn state_name() -> &'static str {
+    if !STARTED.load(Relaxed) {
+        return "";
+    }
     if SIGNALS.is_fatal() {
         return "failed";
     }
@@ -38,26 +44,17 @@ fn code(state: State) -> u8 {
     }
 }
 
-pub fn start(led: Led, psram_stack: bool) {
-    let pin = led.gpio;
-    // SAFETY: plain GPIO configuration of a pin the app dedicated to the LED.
-    let configured = unsafe {
-        sys::gpio_reset_pin(pin) == sys::ESP_OK
-            && sys::gpio_set_direction(pin, sys::gpio_mode_t_GPIO_MODE_OUTPUT) == sys::ESP_OK
-    };
-    if !configured {
-        log::warn!("Status LED: GPIO {pin} could not be configured; no light");
-        return;
-    }
+pub fn start(mut led: Led, psram_stack: bool) {
     let reason = reset_reason();
     let mut light = Light::new(led.phrase, reason);
     log::info!(
-        "Status LED on GPIO {pin}: reset \"{reason}\" ({} flashes); healthy spells \"{}\"",
+        "Status LED: reset \"{reason}\" ({} flashes); healthy spells \"{}\"",
         light.flashes(),
         led.phrase
     );
     // Never writes flash, so its 4 KiB stack may live in PSRAM.
     let spawned = spawn_worker(c"mf-led", 4096, psram_stack, move || {
+        STARTED.store(true, Relaxed);
         let mut errors = 0u32;
         let mut error_until = 0u64;
         let mut previous = None;
@@ -76,8 +73,16 @@ pub fn start(led: Led, psram_stack: bool) {
             let fatal = SIGNALS.is_fatal().then(|| SIGNALS.current_stage());
             let on = light.on(now, fatal, state);
             if previous != Some(on) {
-                // SAFETY: configured output pin, owned by this task.
-                unsafe { sys::gpio_set_level(pin, u32::from(on == led.active_high)) };
+                let level = if on == led.active_high {
+                    Level::High
+                } else {
+                    Level::Low
+                };
+                if let Err(e) = led.driver.set_level(level) {
+                    STARTED.store(false, Relaxed);
+                    log::warn!("Status LED write failed ({e}); no light");
+                    return;
+                }
                 previous = Some(on);
             }
             if now % 10_000 < 50 {

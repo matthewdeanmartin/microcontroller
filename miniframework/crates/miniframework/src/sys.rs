@@ -146,10 +146,15 @@ pub static STATS: Stats = Stats {
 
 impl Stats {
     pub fn sent(&self, bytes: usize) {
-        let total = self.bytes_out.fetch_add(bytes as u32, Relaxed) as u64 + bytes as u64;
-        if total >= 1024 {
-            let kib = (total / 1024) as u32;
-            self.bytes_out.fetch_sub(kib * 1024, Relaxed);
+        // One atomic update of the sub-KiB remainder, so concurrent callers
+        // can never both carry the same KiB (and wrap the counter).
+        let mut kib = 0;
+        let _ = self.bytes_out.fetch_update(Relaxed, Relaxed, |rest| {
+            let total = u64::from(rest) + bytes as u64;
+            kib = (total / 1024) as u32;
+            Some((total % 1024) as u32)
+        });
+        if kib > 0 {
             self.kib_out.fetch_add(kib, Relaxed);
         }
     }
@@ -187,6 +192,12 @@ impl Stats {
 /// recording a board's own health as time series). `tags` are added after
 /// `host` and `app` (NanaCoin adds `bank`).
 pub fn influx_line(info: &SysInfo, tags: &[(&str, String)]) -> String {
+    influx_line_with(info, tags, &[])
+}
+
+/// [`influx_line`] plus the app's own fields (`Service::metrics`), after
+/// the board's.
+pub fn influx_line_with(info: &SysInfo, tags: &[(&str, String)], extra: &[(&str, f64)]) -> String {
     let mut fields: Vec<(&str, f64)> = vec![
         ("uptime_s", (info.uptime_ms / 1000) as f64),
         ("heap_internal_free", info.heap.internal_free as f64),
@@ -212,6 +223,10 @@ pub fn influx_line(info: &SysInfo, tags: &[(&str, String)]) -> String {
     if info.wifi.disconnects > 0 {
         fields.push(("wifi_disconnects", info.wifi.disconnects as f64));
     }
+    if info.heap.psram_total > 0 {
+        fields.push(("heap_psram_min", info.heap.psram_min as f64));
+    }
+    fields.extend(extra.iter().copied());
     let mut line = format!(
         "board,host={},app={}",
         crate::influx::escape_tag(&info.host),

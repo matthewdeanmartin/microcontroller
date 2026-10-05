@@ -278,6 +278,8 @@ pub struct Signals {
     serve_beat: AtomicU32,
     tls_beat: AtomicU32,
     tls_running: AtomicBool,
+    /// The setup network is open (`esp::WifiSetup`).
+    setup: AtomicBool,
 }
 
 pub static SIGNALS: Signals = Signals {
@@ -289,6 +291,7 @@ pub static SIGNALS: Signals = Signals {
     serve_beat: AtomicU32::new(0),
     tls_beat: AtomicU32::new(0),
     tls_running: AtomicBool::new(false),
+    setup: AtomicBool::new(false),
 };
 
 /// A loop that has not turned for this long counts as stalled.
@@ -325,6 +328,13 @@ impl Signals {
     }
     pub fn mdns(&self, up: bool) {
         self.mdns.store(up, Relaxed);
+    }
+    /// The board's setup network opened or closed (an app's light shows it).
+    pub fn setup(&self, open: bool) {
+        self.setup.store(open, Relaxed);
+    }
+    pub fn in_setup(&self) -> bool {
+        self.setup.load(Relaxed)
     }
     pub fn ready(&self) {
         self.serve_beat();
@@ -592,6 +602,7 @@ mod tests {
             serve_beat: AtomicU32::new(0),
             tls_beat: AtomicU32::new(0),
             tls_running: AtomicBool::new(false),
+            setup: AtomicBool::new(false),
         };
         signals.stage(Stage::App);
         signals.step(FIRST_APP_STEP + 2, "ledger replay");

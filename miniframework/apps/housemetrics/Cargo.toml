@@ -25,9 +25,13 @@ desktop = []
 esp32 = ["miniframework/esp32", "miniframework/coredump", "dep:esp-idf-svc", "dep:embuild", "bundled-web"]
 # Embed the Angular app (run `make web` first).
 bundled-web = []
+# Transports (`make firmware TRANSPORT=...`): plain HTTP is always served;
+# `https` adds TLS, `http2` adds HTTP/2 over it. The desktop has no TLS.
+https = ["miniframework/tls"]
+http2 = ["https", "miniframework/http2"]
 
 [dependencies]
-miniframework = { path = "../../crates/miniframework" }
+miniframework = { path = "../../crates/miniframework", default-features = false, features = ["gzip"] }
 sha2 = { version = "0.10", default-features = false }
 getrandom = "0.2"
 log = "0.4"

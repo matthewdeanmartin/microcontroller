@@ -11,12 +11,16 @@ use crate::http::{self, Response};
 use crate::site::{Scratch, Service, Site};
 use crate::sys::STATS;
 use std::io::{self, Read, Write};
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 /// An established connection: plain TCP or finished TLS.
 pub trait Conn: Read + Write + Send {
     fn secure(&self) -> bool;
+    /// The TLS handshake chose HTTP/2 (ALPN `h2`).
+    fn h2(&self) -> bool {
+        false
+    }
 }
 
 impl Conn for std::net::TcpStream {
@@ -29,6 +33,8 @@ impl Conn for std::net::TcpStream {
 pub struct Limits {
     pub tls_clients: usize,
     pub http_clients: usize,
+    /// Requests one HTTP/2 connection may have open at once.
+    pub h2_streams: usize,
     /// TLS handshakes in progress at once. One on a single core: two
     /// concurrent ECDHE computations just take twice as long.
     pub handshakes: usize,
@@ -46,6 +52,7 @@ impl Limits {
         Self {
             tls_clients: 3,
             http_clients: 3,
+            h2_streams: 4,
             handshakes: 1,
             response_budget: 192 * 1024,
             idle: Duration::from_secs(60),
@@ -58,6 +65,7 @@ impl Limits {
         Self {
             tls_clients: 8,
             http_clients: 4,
+            h2_streams: 8,
             handshakes: 2,
             response_budget: 2 * 1024 * 1024,
             idle: Duration::from_secs(60),
@@ -68,6 +76,7 @@ impl Limits {
         Self {
             tls_clients: 0,
             http_clients: 64,
+            h2_streams: 16,
             handshakes: 0,
             response_budget: 64 * 1024 * 1024,
             idle: Duration::from_secs(60),
@@ -90,15 +99,101 @@ struct Client<C> {
     refused: bool,
     /// Lingering close in progress since then.
     draining: Option<Instant>,
+    /// Requests answered on this connection (HTTP/2 can only start first).
+    served: u32,
+    /// Bytes of `100 Continue` sent for the request now arriving.
+    continued: usize,
+    #[cfg(feature = "http2")]
+    h2: Option<Box<crate::h2::Connection>>,
 }
 
 /// After refusing a request whose body is still arriving, keep reading (and
 /// discarding) for up to this long before closing. Closing a socket with
 /// unread data makes the OS send a reset, which can destroy the error reply
 /// before the client reads it (always on Windows, sometimes on lwIP).
-pub const LINGER: Duration = Duration::from_millis(500);
+pub const LINGER: Duration = Duration::from_millis(1500);
 /// Bytes a lingering close will read and discard at most.
-const LINGER_BYTES: usize = 64 * 1024;
+const LINGER_BYTES: usize = 1024 * 1024;
+
+/// A streamed request body that makes no progress for this long ends the
+/// request (the connection is closed).
+pub const STREAM_STALL: Duration = Duration::from_secs(10);
+
+/// Whether the multiplexer would take another TLS connection now (a free
+/// slot, or an idle keep-alive one it may evict). The handshake task checks
+/// it before accepting, so a browser's extra connections wait in the listen
+/// backlog instead of paying for a handshake and then being dropped.
+pub static TLS_ROOM: AtomicBool = AtomicBool::new(true);
+
+/// The body of a streamed request: the bytes that arrived with the head,
+/// then the connection, until the declared length. Waits (briefly yielding)
+/// when the socket has nothing yet.
+/// Writes a few bytes on a nonblocking connection, waiting (as a streamed
+/// body read does) up to [`STREAM_STALL`] for room. False on failure.
+fn send_all<C: Conn>(conn: &mut C, mut bytes: &[u8]) -> bool {
+    let began = Instant::now();
+    while !bytes.is_empty() {
+        match conn.write(bytes) {
+            Ok(0) => return false,
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if began.elapsed() >= STREAM_STALL {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(_) => return false,
+        }
+    }
+    true
+}
+
+struct BodyStream<'c, C: Conn> {
+    conn: &'c mut C,
+    buffered: &'c [u8],
+    /// Bytes of `buffered` that belong to this body.
+    from_buffer: usize,
+    remaining: usize,
+    last_progress: Instant,
+}
+
+impl<C: Conn> Read for BodyStream<'_, C> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.remaining == 0 || out.is_empty() {
+            return Ok(0);
+        }
+        let want = out.len().min(self.remaining);
+        if self.from_buffer < self.buffered.len() {
+            let n = want.min(self.buffered.len() - self.from_buffer);
+            out[..n].copy_from_slice(&self.buffered[self.from_buffer..self.from_buffer + n]);
+            self.from_buffer += n;
+            self.remaining -= n;
+            return Ok(n);
+        }
+        loop {
+            match self.conn.read(&mut out[..want]) {
+                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(n) => {
+                    self.remaining -= n;
+                    self.last_progress = Instant::now();
+                    return Ok(n);
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    if self.last_progress.elapsed() >= STREAM_STALL {
+                        return Err(io::ErrorKind::TimedOut.into());
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
 
 pub struct Mux<C: Conn> {
     clients: Vec<Client<C>>,
@@ -129,6 +224,26 @@ impl<C: Conn> Mux<C> {
         self.clients.is_empty()
     }
 
+    /// Whether [`Mux::add`] would admit a connection of this kind now: a free
+    /// slot, or an idle keep-alive connection it would evict. Accept only
+    /// then, and extra connections wait in the listen backlog rather than
+    /// being accepted and dropped (which a browser reports as a failed load).
+    pub fn has_room(&self, secure: bool) -> bool {
+        let limit = if secure {
+            self.limits.tls_clients
+        } else {
+            self.limits.http_clients
+        };
+        let mut same = 0;
+        for client in self.clients.iter().filter(|c| c.conn.secure() == secure) {
+            if client.evictable() {
+                return true;
+            }
+            same += 1;
+        }
+        same < limit
+    }
+
     /// Admits a connection, evicting the longest-idle one of the same kind
     /// if every slot is taken. Never evicts a request or response in flight.
     pub fn add(&mut self, conn: C) {
@@ -148,12 +263,7 @@ impl<C: Conn> Mux<C> {
                 .clients
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| {
-                    c.conn.secure() == secure
-                        && c.response.is_none()
-                        && c.used == 0
-                        && c.active.elapsed() > Duration::from_millis(500)
-                })
+                .filter(|(_, c)| c.conn.secure() == secure && c.evictable())
                 .max_by_key(|(_, c)| c.active.elapsed())
                 .map(|(i, _)| i);
             match idle {
@@ -169,7 +279,9 @@ impl<C: Conn> Mux<C> {
         }
         self.clients.push(Client {
             conn,
-            input: vec![0; self.input_limit],
+            // Headers fit; a body grows it on demand (below), so an idle
+            // keep-alive client holds 4 KiB, not the whole body limit.
+            input: vec![0; http::HEADER_LIMIT.min(self.input_limit)],
             used: 0,
             response: None,
             active: Instant::now(),
@@ -177,35 +289,35 @@ impl<C: Conn> Mux<C> {
             dispatched: None,
             refused: false,
             draining: None,
+            served: 0,
+            continued: 0,
+            #[cfg(feature = "http2")]
+            h2: None,
         });
     }
 
     /// One turn for every client. Returns true if any made progress, so a
     /// desktop caller can sleep when idle.
     pub fn turn<S: Service>(&mut self, site: &Site<S>) -> bool {
-        let mut queued: usize = self
-            .clients
-            .iter()
-            .filter_map(|c| c.response.as_ref())
-            .map(Response::retained_bytes)
-            .sum();
+        let mut queued: usize = self.clients.iter().map(Client::retained_bytes).sum();
         let budget = self.limits.response_budget;
         let mut progress = false;
         let limits = self.limits.clone();
         let body_limit = self.body_limit;
         let scratch = &mut self.scratch;
         self.clients.retain_mut(|client| {
-            let before = client.response.as_ref().map_or(0, Response::retained_bytes);
+            let before = client.retained_bytes();
             let (keep, moved) = client.poll(site, scratch, &limits, body_limit, queued < budget);
             progress |= moved;
             queued -= before;
             if keep {
-                queued += client.response.as_ref().map_or(0, Response::retained_bytes);
+                queued += client.retained_bytes();
             }
             keep
         });
         let tls = self.clients.iter().filter(|c| c.conn.secure()).count();
         let http = self.clients.len() - tls;
+        TLS_ROOM.store(self.has_room(true), Relaxed);
         STATS.tls_open.store(tls as u32, Relaxed);
         STATS.http_open.store(http as u32, Relaxed);
         events::emit(Event::Turn {
@@ -218,6 +330,27 @@ impl<C: Conn> Mux<C> {
 }
 
 impl<C: Conn> Client<C> {
+    /// Bytes held for unsent responses.
+    fn retained_bytes(&self) -> usize {
+        #[cfg(feature = "http2")]
+        if let Some(h2) = &self.h2 {
+            return h2.retained_bytes();
+        }
+        self.response.as_ref().map_or(0, Response::retained_bytes)
+    }
+
+    /// Idle keep-alive: no request or response in flight for a while.
+    fn evictable(&self) -> bool {
+        #[cfg(feature = "http2")]
+        if let Some(h2) = &self.h2 {
+            return h2.evictable();
+        }
+        self.response.is_none()
+            && self.used == 0
+            && self.draining.is_none()
+            && self.active.elapsed() > Duration::from_millis(500)
+    }
+
     /// One turn of a lingering close; false once the connection can go.
     fn drain(&mut self, since: Instant) -> bool {
         if since.elapsed() >= LINGER || self.used >= LINGER_BYTES {
@@ -252,6 +385,33 @@ impl<C: Conn> Client<C> {
         if let Some(since) = self.draining {
             return (self.drain(since), true);
         }
+        #[cfg(feature = "http2")]
+        {
+            // HTTP/2 starts a connection: chosen by ALPN in the TLS
+            // handshake, or (cleartext, prior knowledge) by the preface.
+            if self.h2.is_none()
+                && self.served == 0
+                && (self.conn.h2()
+                    || (self.used > 0
+                        && crate::h2::Connection::looks_like_preface(&self.input[..self.used])))
+            {
+                self.h2 = Some(Box::new(crate::h2::Connection::new(
+                    &self.input[..self.used],
+                    limits.h2_streams,
+                )));
+                self.used = 0;
+            }
+            if let Some(h2) = self.h2.as_mut() {
+                return h2.poll(
+                    &mut self.conn,
+                    site,
+                    scratch,
+                    limits,
+                    body_limit,
+                    may_dispatch,
+                );
+            }
+        }
         if self.response.is_none() && self.active.elapsed() > limits.idle {
             events::emit(Event::IdleExpired);
             return (false, false);
@@ -274,8 +434,22 @@ impl<C: Conn> Client<C> {
             if self.used > 0 {
                 self.request_started.get_or_insert_with(Instant::now);
             }
-            let mut parsed = http::parse(&self.input[..self.used], body_limit);
+            let stream = |method: &str, uri: &str| site.stream_limit(method, uri);
+            let mut parsed = http::parse_streaming(&self.input[..self.used], body_limit, &stream);
             if matches!(parsed, Ok(None)) {
+                let limit = http::HEADER_LIMIT + body_limit;
+                if self.used == self.input.len() && self.input.len() < limit {
+                    let next = (self.input.len() * 2).min(limit);
+                    if self
+                        .input
+                        .try_reserve_exact(next - self.input.len())
+                        .is_err()
+                    {
+                        events::emit(Event::AllocationFailed);
+                        return (false, true);
+                    }
+                    self.input.resize(next, 0);
+                }
                 match self.conn.read(&mut self.input[self.used..]) {
                     Ok(0) => return (false, true),
                     Ok(n) => {
@@ -283,7 +457,15 @@ impl<C: Conn> Client<C> {
                         self.used += n;
                         self.active = Instant::now();
                         self.request_started.get_or_insert(self.active);
-                        parsed = http::parse(&self.input[..self.used], body_limit);
+                        #[cfg(feature = "http2")]
+                        if self.served == 0
+                            && crate::h2::Connection::looks_like_preface(&self.input[..self.used])
+                        {
+                            // Switch on the next turn, before HTTP/1 parsing.
+                            return (true, true);
+                        }
+                        parsed =
+                            http::parse_streaming(&self.input[..self.used], body_limit, &stream);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                     Err(e) => {
@@ -296,19 +478,87 @@ impl<C: Conn> Client<C> {
                     }
                 }
             }
+            if matches!(parsed, Ok(None))
+                && self.continued < http::CONTINUE.len()
+                && http::expects_continue(&self.input[..self.used])
+            {
+                match self.conn.write(&http::CONTINUE[self.continued..]) {
+                    Ok(n) => {
+                        self.continued += n;
+                        progress = true;
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(_) => return (false, true),
+                }
+            }
             match parsed {
                 Ok(Some(request)) => {
                     progress = true;
-                    let consumed = request.consumed;
+                    let mut consumed = request.consumed;
                     let began = Instant::now();
-                    let response = site.respond(&request, self.conn.secure(), scratch);
+                    let secure = self.conn.secure();
+                    let response = match request.streamed {
+                        None => site.respond(&request, secure, scratch),
+                        Some(length) => {
+                            // The head arrived alone: a client that asked
+                            // waits for `100 Continue` before the body.
+                            if self.used == consumed
+                                && http::expects_continue(&self.input[..consumed])
+                                && !send_all(&mut self.conn, &http::CONTINUE[self.continued..])
+                            {
+                                return (false, true);
+                            }
+                            let mut body = BodyStream {
+                                conn: &mut self.conn,
+                                buffered: &self.input[consumed..self.used],
+                                from_buffer: 0,
+                                remaining: length,
+                                last_progress: Instant::now(),
+                            };
+                            let response =
+                                site.respond_with(&request, secure, scratch, Some(&mut body));
+                            // Whatever the handler left unread (an early
+                            // error, say) is read and dropped: the length is
+                            // bounded by the route, and closing on unread
+                            // data would reset the connection.
+                            let mut sink = [0u8; 1024];
+                            let drained = loop {
+                                match body.read(&mut sink) {
+                                    Ok(0) => break true,
+                                    Ok(_) => {}
+                                    Err(_) => break false,
+                                }
+                            };
+                            consumed += body.from_buffer;
+                            if drained {
+                                response
+                            } else {
+                                // The body never arrived: whatever the handler
+                                // made of a short body is moot. Say so, close.
+                                events::emit(Event::RequestTimeout {
+                                    ms: STREAM_STALL.as_millis() as u32,
+                                });
+                                site.refuse(408, &self.input[..request.consumed])
+                            }
+                        }
+                    };
+                    self.active = Instant::now();
+                    self.served += 1;
+                    self.continued = 0;
                     self.dispatched = Some((began, response.status));
                     self.response = Some(response);
                     self.input.copy_within(consumed..self.used, 0);
                     self.used -= consumed;
+                    // Give back a body-sized buffer once its request is done.
+                    if self.input.len() > http::HEADER_LIMIT && self.used <= http::HEADER_LIMIT {
+                        self.input.truncate(http::HEADER_LIMIT);
+                        self.input.shrink_to_fit();
+                    }
                     self.request_started = None;
                 }
-                Ok(None) if self.used < self.input.len() => {}
+                Ok(None)
+                    if self.used < self.input.len()
+                        || self.input.len() < http::HEADER_LIMIT + body_limit => {}
                 other => {
                     let status = other.err().unwrap_or(413);
                     STATS.errors.fetch_add(1, Relaxed);
@@ -378,6 +628,8 @@ mod tests {
         output: Arc<Mutex<Vec<u8>>>,
         /// Bytes the "socket" accepts before WouldBlock; None is unlimited.
         window: Arc<Mutex<Option<usize>>>,
+        /// The peer closed: reads past the input end are EOF, not WouldBlock.
+        closed: Arc<std::sync::atomic::AtomicBool>,
     }
 
     impl Pipe {
@@ -387,6 +639,7 @@ mod tests {
                 input: Arc::new(Mutex::new(input.to_vec())),
                 output: Arc::default(),
                 window: Arc::default(),
+                closed: Arc::default(),
             }
         }
         fn written(&self) -> String {
@@ -398,6 +651,9 @@ mod tests {
         fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
             let mut input = self.input.lock().unwrap();
             if input.is_empty() {
+                if self.closed.load(Relaxed) {
+                    return Ok(0);
+                }
                 return Err(io::ErrorKind::WouldBlock.into());
             }
             let n = out.len().min(input.len());
@@ -450,6 +706,7 @@ mod tests {
         Limits {
             tls_clients: 1,
             http_clients: 1,
+            h2_streams: 2,
             handshakes: 1,
             response_budget: 1024 * 1024,
             idle: Duration::from_millis(400),
@@ -589,5 +846,198 @@ mod tests {
         );
         assert!(large.response_budget > small.response_budget);
         assert_eq!(Limits::desktop().tls_clients, 0);
+    }
+
+    /// Streams PUT /blobs/* bodies up to 64 KiB; `sum` reads them, `refuse`
+    /// does not.
+    struct Uploads;
+    impl Service for Uploads {
+        fn handle(&self, req: &Request<'_>, reply: &mut Reply<'_>) {
+            match req.path {
+                "/blobs/sum" => {
+                    let mut bytes = Vec::new();
+                    match req.body_reader().read_to_end(&mut bytes) {
+                        Ok(_) => {
+                            let sum: u64 = bytes.iter().map(|&b| u64::from(b)).sum();
+                            reply.text(201, "text/plain", &format!("{} {sum}", bytes.len()));
+                        }
+                        Err(e) => reply.text(400, "text/plain", &format!("short body: {e}")),
+                    }
+                }
+                "/blobs/refuse" => reply.text(413, "text/plain", "over budget"),
+                _ => reply.text(200, "text/plain", "hello"),
+            }
+        }
+        fn streamed_body(&self, method: &str, path: &str) -> Option<usize> {
+            (method == "PUT" && path.starts_with("/blobs/")).then_some(64 * 1024)
+        }
+    }
+
+    fn uploads() -> Site<Uploads> {
+        let mut config = Config::new("test", "board.local");
+        config.app_paths = &["/blobs"];
+        Site::new(config, Uploads, DesktopPlatform)
+    }
+
+    fn put(path: &str, body: &[u8]) -> Vec<u8> {
+        let mut raw = format!(
+            "PUT {path} HTTP/1.1\r\nHost: b\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        raw.extend_from_slice(body);
+        raw
+    }
+
+    #[test]
+    fn a_large_upload_streams_to_the_handler_and_pipelining_survives() {
+        capture::start();
+        let site = uploads();
+        // Buffers sized for 1 KiB bodies; the upload is 20 KB.
+        let mut mux = Mux::new(limits(), 1024, 4096);
+        let body: Vec<u8> = (0..20_000u32).map(|i| (i % 251) as u8).collect();
+        let expected: u64 = body.iter().map(|&b| u64::from(b)).sum();
+        let pipe = Pipe::new(false, &[put("/blobs/sum", &body), GET.to_vec()].concat());
+        mux.add(pipe.clone());
+        for _ in 0..4 {
+            mux.turn(&site);
+        }
+        let written = pipe.written();
+        assert!(written.starts_with("HTTP/1.1 201"), "{written}");
+        assert!(written.contains(&format!("20000 {expected}")));
+        assert_eq!(
+            written.matches("HTTP/1.1 ").count(),
+            2,
+            "the GET after it too"
+        );
+        assert!(capture::take().is_empty());
+    }
+
+    #[test]
+    fn an_unread_body_is_drained_so_the_next_request_parses() {
+        let site = uploads();
+        let mut mux = Mux::new(limits(), 1024, 4096);
+        let pipe = Pipe::new(
+            false,
+            &[put("/blobs/refuse", &[9u8; 30_000]), GET.to_vec()].concat(),
+        );
+        mux.add(pipe.clone());
+        for _ in 0..4 {
+            mux.turn(&site);
+        }
+        let written = pipe.written();
+        assert!(written.starts_with("HTTP/1.1 413"), "{written}");
+        assert!(written.contains("HTTP/1.1 200"), "{written}");
+        assert_eq!(mux.len(), 1, "keep-alive survives a refused upload");
+    }
+
+    #[test]
+    fn a_client_that_vanishes_mid_upload_is_answered_and_closed() {
+        capture::start();
+        let site = uploads();
+        let mut mux = Mux::new(limits(), 1024, 4096);
+        let mut raw = put("/blobs/sum", &[1u8; 10_000]);
+        raw.truncate(raw.len() - 4000);
+        let pipe = Pipe::new(false, &raw);
+        pipe.closed.store(true, Relaxed);
+        mux.add(pipe.clone());
+        for _ in 0..3 {
+            mux.turn(&site);
+        }
+        assert!(
+            pipe.written().starts_with("HTTP/1.1 408"),
+            "{}",
+            pipe.written()
+        );
+        assert!(pipe.written().contains("Connection: close"));
+        assert!(mux.is_empty());
+        assert_eq!(
+            capture::take(),
+            vec![Event::RequestTimeout {
+                ms: STREAM_STALL.as_millis() as u32
+            }]
+        );
+    }
+
+    #[test]
+    fn room_means_a_free_slot_or_an_idle_connection_to_evict() {
+        let site = site();
+        let mut mux = Mux::new(limits(), 1024, 4096);
+        assert!(mux.has_room(false) && mux.has_room(true));
+        let busy = Pipe::new(false, b"GET /api/x HTTP/1.1\r\n");
+        mux.add(busy);
+        mux.turn(&site);
+        assert!(
+            !mux.has_room(false),
+            "its only slot has a request in flight"
+        );
+        assert!(mux.has_room(true), "TLS slots are separate");
+        let mut mux = Mux::new(limits(), 1024, 4096);
+        mux.add(Pipe::new(false, GET));
+        mux.turn(&site);
+        mux.turn(&site);
+        assert!(!mux.has_room(false), "just answered: not idle yet");
+        std::thread::sleep(Duration::from_millis(550));
+        assert!(mux.has_room(false), "idle keep-alive may be evicted");
+    }
+
+    #[test]
+    fn expect_100_continue_gets_the_interim_answer_once_then_the_reply() {
+        let site = site();
+        let mut mux = Mux::new(limits(), 1024, 4096);
+        let pipe = Pipe::new(
+            false,
+            b"POST /api/x HTTP/1.1\r\nHost: board.local\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n",
+        );
+        mux.add(pipe.clone());
+        mux.turn(&site);
+        mux.turn(&site);
+        assert_eq!(pipe.written(), "HTTP/1.1 100 Continue\r\n\r\n");
+        pipe.input.lock().unwrap().extend_from_slice(b"hello");
+        mux.turn(&site);
+        mux.turn(&site);
+        let written = pipe.written();
+        assert_eq!(written.matches("100 Continue").count(), 1, "{written}");
+        assert!(written.contains("HTTP/1.1 200 OK"), "{written}");
+    }
+
+    #[test]
+    fn other_expectations_are_refused() {
+        let site = site();
+        let mut mux = Mux::new(limits(), 1024, 4096);
+        let pipe = Pipe::new(
+            false,
+            b"POST /api/x HTTP/1.1\r\nHost: board.local\r\nExpect: something\r\nContent-Length: 5\r\n\r\nhello",
+        );
+        mux.add(pipe.clone());
+        mux.turn(&site);
+        mux.turn(&site);
+        assert!(
+            pipe.written().starts_with("HTTP/1.1 417"),
+            "{}",
+            pipe.written()
+        );
+    }
+
+    #[test]
+    fn a_body_larger_than_the_header_buffer_grows_it_then_gives_it_back() {
+        let site = site();
+        let mut mux = Mux::new(limits(), 12 * 1024, 4096);
+        let body = vec![b'x'; 10 * 1024];
+        let head = format!(
+            "POST /api/x HTTP/1.1\r\nHost: board.local\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let pipe = Pipe::new(false, &[head.as_bytes(), &body].concat());
+        mux.add(pipe.clone());
+        for _ in 0..8 {
+            mux.turn(&site);
+        }
+        assert!(
+            pipe.written().contains("HTTP/1.1 200 OK"),
+            "{}",
+            pipe.written()
+        );
+        assert_eq!(mux.clients[0].input.len(), http::HEADER_LIMIT);
     }
 }

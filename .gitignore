@@ -229,6 +229,8 @@ dependencies.lock
 
 # MkDocs
 site/
+!miniframework/crates/miniframework/src/site/
+!miniframework/crates/miniframework/src/site/tests.rs
 
 # MicroPython device credentials
 config.py
