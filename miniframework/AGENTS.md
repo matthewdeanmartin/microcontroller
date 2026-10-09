@@ -47,9 +47,12 @@ from a copy of one of them.
   check `/api/v1/sys` heap numbers on the board.
 - **Never erase NVS** in framework code (`take_with(false)`, and
   `Board::partition` for app partitions): it may hold someone's data.
-- **No app UI in the framework.** Each app owns its Angular client; the
-  framework's only page is the startup-failure text on port 8080 (and the
-  `/trust` page). No auth in the framework yet.
+- **No app UI in the framework.** Each app owns its Angular client. Shared
+  system pages are startup-failure text on port 8080, `/trust`, and the
+  explicitly optional `wifi-setup` vanilla-JS provisioning portal. Its
+  compiled optional code is a local setup gate, not app authentication.
+  See `docs/WIFI_SETUP.md` for integration and the 12 KiB internal worker
+  stack; setup workers write NVS and must never use PSRAM stacks.
 - **Four apps use this crate**: NanaCoin (`../../nanacoin/nanacoin_rs`,
   features `tls`), Minicloud (`../../mastomini/minicloud_rs`, plain HTTP on
   an ESP32-C6 without PSRAM, streamed blob uploads/downloads), mastomini

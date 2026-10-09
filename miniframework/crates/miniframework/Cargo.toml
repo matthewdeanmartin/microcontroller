@@ -9,6 +9,10 @@ license = "MIT"
 publish = false
 
 [features]
+rate-limit = []
+queue = []
+# Local vanilla-JS Wi-Fi provisioning portal; no UI or worker unless opted in.
+wifi-setup = []
 # Transports: plain HTTP is always there. `tls` adds HTTPS (the boards'
 # esp-tls server sessions; without it no TLS server code is linked), and
 # `http2` adds HTTP/2 on top (ALPN over TLS on boards; cleartext
@@ -48,3 +52,11 @@ esp-idf-svc = { version = "=0.52.1", optional = true, features = ["experimental"
 serde_json = "1"
 ciborium = "0.2"
 rmpv = "1"
+
+[[example]]
+name = "resource_protection"
+required-features = ["rate-limit", "queue"]
+
+[[example]]
+name = "wifi_setup"
+required-features = ["wifi-setup"]

@@ -550,6 +550,14 @@ fn body_of(e: &ApiError) -> ErrorBody {
 pub trait Service: Send + Sync + 'static {
     /// Leave `reply` untouched for "no such route" (the site sends a 404).
     fn handle(&self, req: &Request<'_>, reply: &mut Reply<'_>);
+    /// Optional local provisioning routes. These bypass static files and
+    /// HTTPS-only enforcement so a phone can provision an untrusted board.
+    /// Return true only for explicitly owned setup paths, not normal APIs.
+    #[cfg(feature = "wifi-setup")]
+    fn setup_route(&self, path: &str) -> bool {
+        let _ = path;
+        false
+    }
     /// Accept a body larger than `Config::body_limit` on this route, up to
     /// the returned size, as a stream ([`Request::body_reader`]). The
     /// connection loop waits while the handler reads it (stalls over 10 s
@@ -782,13 +790,18 @@ impl<S: Service> Site<S> {
         };
         // An `app_paths` entry of "/" gives the app every path (an app with
         // its own router); built-in pages and static files still go first.
-        let is_api = owned("/api")
+        #[cfg(feature = "wifi-setup")]
+        let setup_route = self.service.setup_route(path);
+        #[cfg(not(feature = "wifi-setup"))]
+        let setup_route = false;
+        let is_api = setup_route
+            || owned("/api")
             || path == "/metrics"
             || self.config.app_paths.iter().any(|p| *p != "/" && owned(p));
         // Machine health stays scrapeable in every transport mode.
         let metrics = path == "/metrics" && (method == "GET" || head);
 
-        if !secure && !metrics && self.service.https_required() {
+        if !secure && !metrics && !setup_route && self.service.https_required() {
             let reply = self
                 .builtin_page(method, path, true)
                 .unwrap_or(web::StaticReply {
@@ -859,7 +872,7 @@ impl<S: Service> Site<S> {
         } else if method == "OPTIONS" && cors == Cors::Allowlist {
             reply.empty();
         } else {
-            if method != "OPTIONS" {
+            if method != "OPTIONS" && !setup_route {
                 self.builtin_api(&req, &mut reply);
             }
             if reply.status == 0 {
@@ -921,6 +934,15 @@ impl<S: Service> Site<S> {
                 self.config.cors_max_age.to_string(),
             ));
             headers.push(("Timing-Allow-Origin", allow.into()));
+            // Chrome's Private Network Access: a public site's preflight to a
+            // board on the home network asks for this, and a response
+            // without it fails as a CORS error even though it was a 200.
+            if request
+                .header("Access-Control-Request-Private-Network")
+                .eq_ignore_ascii_case("true")
+            {
+                headers.push(("Access-Control-Allow-Private-Network", "true".into()));
+            }
         }
         // The app's own value for any header the site sets replaces it.
         headers.retain(|(name, _)| {
@@ -961,6 +983,7 @@ impl<S: Service> Site<S> {
         let mut owned = Vec::new();
         if owned.try_reserve_exact(reply.body.len()).is_err() {
             STATS.errors.fetch_add(1, Relaxed);
+            crate::events::emit(crate::events::Event::AllocationFailed);
             return Response::new(
                 503,
                 &[("Content-Type", "application/json"), ("Retry-After", "1")],
@@ -988,19 +1011,20 @@ impl<S: Service> Site<S> {
     /// carries CORS headers, so the page can tell its user *why* (a script
     /// cannot read a cross-origin error without them).
     pub fn refuse(&self, status: u16, raw: &[u8]) -> Response {
-        let mut fields = [httparse::EMPTY_HEADER; 32];
-        let mut parsed = httparse::Request::new(&mut fields);
-        let complete = matches!(parsed.parse(raw), Ok(httparse::Status::Complete(_)));
+        // Refusals are exactly the heads the parser rejects (too many or too
+        // large headers), so read what it can: without CORS the browser
+        // reports a CORS failure instead of this status.
+        let readable = readable_head(raw);
         let header = |name: &str| -> &str {
-            if !complete {
+            let Some((_, fields)) = &readable else {
                 return "";
+            };
+            let mut found = fields.iter().filter(|(n, _)| n.eq_ignore_ascii_case(name));
+            match (found.next(), found.next()) {
+                // A repeated header is ambiguous: trust neither copy.
+                (Some((_, value)), None) => value,
+                _ => "",
             }
-            parsed
-                .headers
-                .iter()
-                .find(|h| h.name.eq_ignore_ascii_case(name))
-                .and_then(|h| std::str::from_utf8(h.value).ok())
-                .unwrap_or("")
         };
         let origin = header("Origin");
         let body: &'static [u8] = match status {
@@ -1013,10 +1037,7 @@ impl<S: Service> Site<S> {
             ("Content-Type", "application/json"),
             ("Cache-Control", "no-store"),
         ];
-        let path = complete
-            .then_some(parsed.path)
-            .flatten()
-            .map_or("", |uri| uri.split_once('?').map_or(uri, |(p, _)| p));
+        let path = readable.as_ref().map_or("", |(path, _)| path);
         let cors = self.service.cors(path);
         if cors == Cors::Public {
             headers.extend([
@@ -1082,6 +1103,10 @@ impl<S: Service> Site<S> {
         }
         match req.path {
             "/api/v1/sys" => reply.wire(req, &self.sysinfo()),
+            "/.well-known/incidents" => reply.wire(
+                req,
+                &crate::incidents::LOG.snapshot(&self.platform.sysinfo().reset_reason),
+            ),
             "/metrics" => reply.text(
                 200,
                 "text/plain; version=0.0.4; charset=utf-8",
@@ -1126,6 +1151,7 @@ impl<S: Service> Site<S> {
             SysInfo::SCHEMA,
             ErrorBody::SCHEMA,
             crate::logbuf::LogPage::SCHEMA,
+            crate::incidents::Incidents::SCHEMA,
         ]);
         roots
     }
@@ -1146,6 +1172,42 @@ impl web::StaticReply {
             close,
         )
     }
+}
+
+/// The request path (without query) and every complete header line of a
+/// head the parser refused, or `None` when even the request line is not
+/// valid HTTP/1.x. A line cut off by the size limit is left out.
+fn readable_head(raw: &[u8]) -> Option<(&str, Vec<(&str, &str)>)> {
+    let head = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map_or(raw, |end| &raw[..end + 2]);
+    let mut complete: Vec<&[u8]> = head.split(|&b| b == b'\n').collect();
+    // Whatever follows the last newline is unfinished (or empty).
+    complete.pop();
+    let mut complete = complete.into_iter().map(|line| line.strip_suffix(b"\r"));
+    let request = std::str::from_utf8(complete.next()??).ok()?;
+    let mut parts = request.split(' ');
+    let (method, uri, version) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some()
+        || method.is_empty()
+        || !method.bytes().all(|b| b.is_ascii_uppercase())
+        || !uri.starts_with('/')
+        || !matches!(version, "HTTP/1.0" | "HTTP/1.1")
+    {
+        return None;
+    }
+    let path = uri.split_once('?').map_or(uri, |(p, _)| p);
+    let mut fields = Vec::new();
+    for line in complete {
+        let line = std::str::from_utf8(line?).ok()?;
+        let (name, value) = line.split_once(':')?;
+        if name.is_empty() || name.contains(|c: char| c.is_ascii_whitespace()) {
+            return None;
+        }
+        fields.push((name, value.trim()));
+    }
+    Some((path, fields))
 }
 
 #[cfg(test)]

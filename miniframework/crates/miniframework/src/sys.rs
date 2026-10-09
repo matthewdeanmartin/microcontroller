@@ -106,6 +106,43 @@ pub trait Platform: Send + Sync + 'static {
     fn sysinfo(&self) -> SysInfo;
 }
 
+/// Fixed-size station sample for background diagnostics; no strings or allocations.
+#[derive(Clone, Copy, Debug)]
+pub struct StationSample {
+    pub rssi: i8,
+    pub channel: u8,
+    pub ip: Option<[u8; 4]>,
+    pub gateway: Option<[u8; 4]>,
+    pub netmask: Option<[u8; 4]>,
+}
+
+#[cfg(any(test, all(feature = "esp32", target_os = "espidf")))]
+pub(crate) fn netmask_octets(prefix: u8) -> Option<[u8; 4]> {
+    if prefix > 32 {
+        return None;
+    }
+    Some(
+        u32::MAX
+            .checked_shl(32 - u32::from(prefix))
+            .unwrap_or(0)
+            .to_be_bytes(),
+    )
+}
+
+#[cfg(test)]
+mod sampler_tests {
+    #[test]
+    fn every_prefix_including_zero_and_full_width_has_an_exact_mask() {
+        for prefix in 0..=32 {
+            let expected = ((u32::MAX as u64) << (32 - prefix)) as u32;
+            assert_eq!(super::netmask_octets(prefix), Some(expected.to_be_bytes()));
+        }
+        for prefix in 33..=255 {
+            assert_eq!(super::netmask_octets(prefix), None);
+        }
+    }
+}
+
 /// Server counters, shared by the connection loop and handshake task.
 /// 32-bit atomics only: the Xtensa targets have no 64-bit atomics.
 pub struct Stats {

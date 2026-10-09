@@ -36,6 +36,14 @@ See [docs/FORMATS.md](docs/FORMATS.md) for the answer so far.
 - **Board services:** Wi-Fi with retries, SNTP, mDNS, an NVS key-value
   store, named data partitions (never erased), an HTTP(S) client — and
   desktop equivalents, so the same app runs on a PC for development.
+- **Optional resource protection:** `rate-limit` adds bounded global/caller
+  token buckets and a concurrency-limiting `Service` wrapper; `queue` adds a
+  bounded RAM job queue with ownership checks, worker limits and expiry.
+  Neither feature is enabled by default. See [docs/RESOURCE_PROTECTION.md](docs/RESOURCE_PROTECTION.md).
+- **Optional Wi-Fi setup:** `wifi-setup` bundles a small offline vanilla-JS
+  page for picking Wi-Fi, entering credentials, and configuring boot/recovery
+  retries (three minutes by default). An optional compiled setup code gates
+  configuration. See [docs/WIFI_SETUP.md](docs/WIFI_SETUP.md).
 - **Two kinds of board:** `BoardConfig::s2()` (one core, 2 MiB PSRAM) and
   `::s3()` (handshakes on one core, serving on the other). A failed startup
   blinks its step and explains itself on port 8080.
@@ -134,6 +142,19 @@ HOUSEMETRICS_ADDR=127.0.0.1:18089 HOUSEMETRICS_DATA=.local/observability-preview
 The preview uses its development admin password unless configured. Do not run
 `ui-smoke` on a live board: it seeds test metrics and creates a device. See
 `apps/housemetrics/DEPLOY_S2.md` for hardware deployment.
+
+## Troubleshooting
+
+**Firefox: "CORS request did not succeed" from a web client hosted elsewhere**
+(for example Mawkingbird). Firefox's Local Network Access checks each request
+a public site makes to your home network; while a check is pending it can drop
+a shared HTTP/2 connection and every request on it. Exempt only the board:
+`about:config` → `network.lna.skip-domains` = `<board>.local` (comma-separate
+several), then restart Firefox. Pages served by the board itself are not
+affected.
+
+If `/.well-known/incidents` on the board shows only `h2_peer_goaway`
+(no `h2_goaway`), the browser closed the connections, not the board.
 
 ## Earlier validation
 

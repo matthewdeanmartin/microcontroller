@@ -1,8 +1,9 @@
-//! Transport and network events, for an app that keeps its own incident
-//! history (NanaCoin's Board Health page does).
+//! Transport and network events. Every event is recorded in the
+//! framework's incident history ([`crate::incidents`], served at
+//! `/.well-known/incidents`) before any observer sees it.
 //!
 //! The framework counts everything in [`crate::sys::STATS`] regardless. An
-//! app that wants the individual events installs one observer with
+//! app that wants the individual events too installs one observer with
 //! [`observe`]; it runs on whichever task saw the event (the serving loop,
 //! the TLS handshake task, Wi-Fi housekeeping), so it must be quick, must not
 //! block and must not take a lock the serving loop holds. Appending to a
@@ -43,6 +44,13 @@ pub enum Event {
     TlsTimeout {
         ms: u32,
     },
+    /// An established TLS connection failed mid-read or mid-write: the
+    /// client sees a network error. `code` is the mbedTLS error.
+    TlsConnectionFailed {
+        code: i32,
+    },
+    /// The peer reset an established TLS connection (routine for browsers).
+    PeerReset,
     /// A finished handshake found the hand-over queue full and was dropped.
     HandoffFull,
     /// Every slot of this kind was busy with a request in flight.
@@ -101,6 +109,7 @@ pub fn observe(observer: fn(&Event)) -> bool {
 
 /// Reports an event to the observer, if any.
 pub fn emit(event: Event) {
+    crate::incidents::LOG.apply(crate::uptime_ms(), &event);
     if let Some(observer) = OBSERVER.get() {
         observer(&event);
     }

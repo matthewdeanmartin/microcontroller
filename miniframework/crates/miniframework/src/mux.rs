@@ -68,7 +68,12 @@ impl Limits {
             h2_streams: 8,
             handshakes: 2,
             response_budget: 2 * 1024 * 1024,
-            idle: Duration::from_secs(60),
+            // A browser's one HTTP/2 connection should outlive the gaps
+            // between a user's clicks: after an idle close Firefox reopens
+            // with a TLS handshake per pending request (2 at a time here,
+            // ~1 s each), costing 2-8 s, and up to 40 s was measured. An
+            // idle connection is still evicted for a new client.
+            idle: Duration::from_secs(300),
             request_deadline: Duration::from_secs(5),
         }
     }
@@ -269,6 +274,7 @@ impl<C: Conn> Mux<C> {
             match idle {
                 Some(i) => {
                     self.clients.swap_remove(i);
+                    crate::incidents::record(crate::incidents::Kind::Evicted, i32::from(secure));
                 }
                 None => {
                     STATS.rejected.fetch_add(1, Relaxed);

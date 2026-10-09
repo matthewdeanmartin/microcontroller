@@ -19,6 +19,9 @@ pub const WRITE_CHUNK_LIMIT: usize = 1024;
 pub const TURN_BUDGET: usize = 16 * 1024;
 
 pub const HEADER_LIMIT: usize = 4096;
+/// Header lines per request. Browsers send ~20 (more with client hints
+/// and extensions); a head over this is refused with 431, not 400.
+pub const MAX_HEADERS: usize = 64;
 
 /// Keeps the address, contents and length of a nonblocking TLS write stable
 /// until it succeeds. HTTP/2 may append/reallocate its output between retries.
@@ -87,7 +90,7 @@ pub const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
 /// `100 Continue` before its body (curl does for bodies over 1 KiB and
 /// waits a second for it otherwise).
 pub fn expects_continue(input: &[u8]) -> bool {
-    let mut headers = [httparse::EMPTY_HEADER; 32];
+    let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut parsed = httparse::Request::new(&mut headers);
     matches!(parsed.parse(input), Ok(httparse::Status::Complete(_)))
         && parsed.version == Some(1)
@@ -110,9 +113,12 @@ pub fn parse_streaming(
     body_limit: usize,
     stream: &dyn Fn(&str, &str) -> Option<usize>,
 ) -> Result<Option<Request>, u16> {
-    let mut headers = [httparse::EMPTY_HEADER; 32];
+    let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut parsed = httparse::Request::new(&mut headers);
-    let start = match parsed.parse(input).map_err(|_| 400u16)? {
+    let start = match parsed.parse(input).map_err(|e| match e {
+        httparse::Error::TooManyHeaders => 431u16,
+        _ => 400,
+    })? {
         httparse::Status::Partial if input.len() >= HEADER_LIMIT => return Err(431),
         httparse::Status::Partial => return Ok(None),
         httparse::Status::Complete(n) if n > HEADER_LIMIT => return Err(431),
@@ -458,6 +464,7 @@ fn reason(status: u16) -> &'static str {
         202 => "Accepted",
         201 => "Created",
         204 => "No Content",
+        302 => "Found",
         304 => "Not Modified",
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -592,6 +599,19 @@ mod tests {
             "x".repeat(HEADER_LIMIT)
         );
         assert_eq!(parse(huge.as_bytes(), 1024).unwrap_err(), 431);
+        // A browser-sized head parses; one with too many lines is a 431.
+        let lines = |n: usize| {
+            let mut head = String::from("GET / HTTP/1.1\r\nHost: n\r\n");
+            for i in 1..n {
+                head.push_str(&format!("X-H{i}: v\r\n"));
+            }
+            head + "\r\n"
+        };
+        assert!(parse(lines(40).as_bytes(), 1024).unwrap().is_some());
+        assert_eq!(
+            parse(lines(MAX_HEADERS + 1).as_bytes(), 1024).unwrap_err(),
+            431
+        );
     }
 
     fn wire(mut reply: Response) -> Vec<u8> {

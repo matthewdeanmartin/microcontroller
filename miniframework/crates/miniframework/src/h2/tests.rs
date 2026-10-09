@@ -461,7 +461,54 @@ fn streams_over_the_limit_are_refused() {
 }
 
 #[test]
+fn a_browser_burst_past_the_limit_waits_instead_of_being_refused() {
+    // Browsers send their first requests before our SETTINGS arrive.
+    let mut c = Client::new(2);
+    let ids: Vec<u32> = (0..10).map(|i| 1 + 2 * i).collect();
+    for (i, &stream) in ids.iter().enumerate() {
+        let method = if i % 2 == 0 { "OPTIONS" } else { "GET" };
+        c.request(stream, method, "/api/hello", &[], true);
+    }
+    let mut answers = Default::default();
+    for _ in 0..20 {
+        c.run();
+        let frames = c.take();
+        c.answers(&frames, &mut answers);
+    }
+    for stream in ids {
+        let answer = &answers[&stream];
+        assert_eq!(answer.reset, None, "stream {stream}");
+        assert!(answer.ended && answer.status != 0, "stream {stream}");
+    }
+}
+
+#[test]
+fn a_burst_past_the_queue_is_refused() {
+    let refused = crate::incidents::LOG.count(crate::incidents::Kind::H2Refused);
+    let mut c = Client::new(2);
+    let total = 2 + QUEUED_STREAMS + 1;
+    for i in 0..total as u32 {
+        c.request(1 + 2 * i, "GET", "/api/hello", &[], true);
+    }
+    let mut answers = Default::default();
+    for _ in 0..40 {
+        c.run();
+        let frames = c.take();
+        c.answers(&frames, &mut answers);
+    }
+    let last = 1 + 2 * (total as u32 - 1);
+    assert_eq!(answers[&last].reset, Some(code::REFUSED_STREAM));
+    assert!((1..last)
+        .step_by(2)
+        .all(|s| answers[&s].reset.is_none() && answers[&s].ended));
+    // Shared with tests running in parallel: it can only have grown.
+    assert!(crate::incidents::LOG.count(crate::incidents::Kind::H2Refused) > refused);
+}
+
+#[test]
 fn protocol_violations_end_the_connection_with_goaway() {
+    use crate::incidents::{Kind, LOG};
+    let ours = LOG.count(Kind::H2GoAway);
     // Not a preface at all.
     let mut c = Client::new(4);
     c.pipe.input.lock().unwrap().clear();
@@ -485,6 +532,8 @@ fn protocol_violations_end_the_connection_with_goaway() {
         .find(|f| f.kind == kind::GOAWAY)
         .unwrap();
     assert_eq!(goaway.payload[4..8], code::FRAME_SIZE_ERROR.to_be_bytes());
+    // Each one is an incident (other tests may add to the count too).
+    assert!(LOG.count(Kind::H2GoAway) >= ours + 2);
     // Even stream ids are the server's.
     let mut c = Client::new(4);
     c.request(2, "GET", "/api/hello", &[], true);

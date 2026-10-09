@@ -33,6 +33,7 @@ pub fn serve<S: Service>(
     let listener = TcpListener::bind(address)?;
     listener.set_nonblocking(true)?;
     log::info!("{} listening on http://{address}", site.config.app);
+    crate::incidents::start_volatile();
     let mut mux: Mux<TcpStream> = Mux::new(
         Limits::desktop(),
         site.config.body_limit,

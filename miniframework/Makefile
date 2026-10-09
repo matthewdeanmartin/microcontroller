@@ -56,6 +56,12 @@ test-web: fixtures
 	cd web && npx vitest run
 
 check: test
+	cd crates/miniframework && $(CARGO) test --no-default-features --features rate-limit
+	cd crates/miniframework && $(CARGO) test --no-default-features --features queue
+	cd crates/miniframework && $(CARGO) test --no-default-features --features wifi-setup
+	cd crates/miniframework && $(CARGO) test --features rate-limit,queue,wifi-setup,http2
+	cd crates/miniframework && $(CARGO) clippy --all-targets --features rate-limit,queue,wifi-setup,http2 -- -D warnings
+	node --check crates/miniframework/src/wifi_setup/setup.js
 	cd crates/miniframework && $(CARGO) fmt --check && $(CARGO) clippy --all-targets -- -D warnings
 	cd crates/miniframework && $(CARGO) clippy --all-targets --no-default-features -- -D warnings
 	cd crates/miniframework && $(CARGO) test --no-default-features

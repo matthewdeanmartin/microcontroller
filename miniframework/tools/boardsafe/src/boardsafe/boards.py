@@ -22,7 +22,7 @@ SUBTYPES = {
 }
 
 #: Espressif application-image header chip IDs, by esptool ``--chip`` name.
-CHIP_IDS = {'esp32': 0, 'esp32s2': 2, 'esp32c3': 5, 'esp32s3': 9, 'esp32c6': 13}
+CHIP_IDS = {'esp32': 0, 'esp32s2': 2, 'esp32c3': 5, 'esp32s3': 9, 'esp32c6': 13, 'esp32p4': 18}
 
 
 @dataclass(frozen=True)

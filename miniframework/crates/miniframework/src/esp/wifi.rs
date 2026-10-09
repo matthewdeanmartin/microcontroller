@@ -9,7 +9,7 @@
 //! responder answers every name with the board's address (phones show the
 //! app's page as a captive portal), and the app's setup page uses
 //! [`WifiSetup`] to list networks and join one. The page is the app's; the
-//! framework serves no UI.
+//! framework serves no UI unless the optional `wifi-setup` portal is enabled.
 //!
 //! While the setup network is open and nobody is on it, the saved network
 //! is retried every minute, so a board that booted before its router (a
@@ -27,8 +27,17 @@ use esp_idf_svc::{
     },
 };
 use std::net::{Ipv4Addr, UdpSocket};
+#[cfg(feature = "wifi-setup")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+#[cfg(feature = "wifi-setup")]
+struct PortalPolicy {
+    options: crate::wifi_setup::Options,
+    retry_minutes: u16,
+    failure_since: Option<Instant>,
+}
 
 /// Joining from the setup page gives up after this long.
 const JOIN_TIMEOUT: Duration = Duration::from_secs(20);
@@ -84,9 +93,189 @@ pub(super) struct Radio {
     /// Why the setup network opened, for the page.
     reason: Option<String>,
     dns_started: bool,
+    #[cfg(feature = "wifi-setup")]
+    portal: Option<PortalPolicy>,
+    #[cfg(feature = "wifi-setup")]
+    portal_active: Arc<AtomicBool>,
 }
 
 impl Radio {
+    #[cfg(feature = "wifi-setup")]
+    pub(super) fn enable_portal(
+        &mut self,
+        options: crate::wifi_setup::Options,
+    ) -> Result<(), String> {
+        options.validate()?;
+        let saved = self
+            .nvs
+            .as_ref()
+            .and_then(|n| n.get_u32("retry_min").ok().flatten())
+            .and_then(|m| crate::wifi_setup::validate_minutes(m).ok());
+        self.portal = Some(PortalPolicy {
+            options,
+            retry_minutes: saved.unwrap_or(options.retry_minutes),
+            failure_since: None,
+        });
+        Ok(())
+    }
+    #[cfg(feature = "wifi-setup")]
+    pub(super) fn portal_options(&self) -> Option<crate::wifi_setup::Options> {
+        self.portal.as_ref().map(|p| p.options)
+    }
+    #[cfg(feature = "wifi-setup")]
+    fn retry_minutes(&self) -> u16 {
+        self.portal
+            .as_ref()
+            .map(|p| p.retry_minutes)
+            .unwrap_or(crate::wifi_setup::DEFAULT_RETRY_MINUTES)
+    }
+    #[cfg(feature = "wifi-setup")]
+    fn connected_address(&self) -> Option<Ipv4Addr> {
+        if self.wifi.is_connected().unwrap_or(false) && self.wifi.is_up().unwrap_or(false) {
+            self.sta_address()
+        } else {
+            None
+        }
+    }
+    #[cfg(feature = "wifi-setup")]
+    fn connect_until(&mut self, ssid: &str, deadline: Instant) -> Result<Ipv4Addr, String> {
+        self.wifi.wifi_mut().connect().map_err(|e| e.to_string())?;
+        while Instant::now() < deadline {
+            // An old DHCP address alone is not proof the chosen network joined.
+            if self
+                .wifi
+                .wifi()
+                .get_ap_info()
+                .is_ok_and(|ap| ap.ssid.as_str() == ssid)
+            {
+                if let Some(ip) = self.connected_address() {
+                    return Ok(ip);
+                }
+            }
+            std::thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(200)),
+            );
+        }
+        let _ = self.wifi.wifi_mut().disconnect();
+        Err("Could not connect and obtain an address. Check the network and password.".into())
+    }
+    #[cfg(feature = "wifi-setup")]
+    fn boot_portal(&mut self, force_setup: bool) -> Result<(), String> {
+        if force_setup {
+            return self
+                .open_setup("Setup forced by this build".into())
+                .map_err(|e| e.to_string());
+        }
+        let Some((ssid, password, saved)) = self.credentials() else {
+            return self
+                .open_setup("No Wi-Fi network is saved yet".into())
+                .map_err(|e| e.to_string());
+        };
+        self.ssid = ssid.clone();
+        self.password = password.clone();
+        let conf = match client(&ssid, &password) {
+            Ok(conf) => conf,
+            Err(_) => {
+                return self
+                    .open_setup("Saved Wi-Fi settings are invalid".into())
+                    .map_err(|e| e.to_string())
+            }
+        };
+        self.wifi
+            .set_configuration(&Configuration::Client(conf))
+            .map_err(|e| e.to_string())?;
+        self.wifi.start().map_err(|e| e.to_string())?;
+        let window = crate::wifi_setup::RetryWindow::new(self.retry_minutes())?;
+        let deadline = Instant::now() + window.duration();
+        let mut attempt = 0;
+        while Instant::now() < deadline {
+            let _ = self.wifi.wifi_mut().disconnect();
+            // Wait briefly for the disconnect event before a new association.
+            let disconnect_deadline = (Instant::now() + Duration::from_secs(1)).min(deadline);
+            while self.wifi.is_connected().unwrap_or(false) && Instant::now() < disconnect_deadline
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let result = self.connect_until(&ssid, (Instant::now() + JOIN_TIMEOUT).min(deadline));
+            if let Ok(ip) = result {
+                if !saved {
+                    self.save(&ssid, &password)?;
+                }
+                self.station_ip = Some(ip);
+                SIGNALS.wifi(true);
+                events::emit(Event::WifiUp);
+                return Ok(());
+            }
+            events::emit(Event::ReconnectFailed { code: 0 });
+            log::warn!(
+                "Wi-Fi join attempt {} failed; retry window remaining {}s",
+                attempt + 1,
+                deadline.saturating_duration_since(Instant::now()).as_secs()
+            );
+            std::thread::sleep(
+                crate::wifi_setup::RetryWindow::backoff(attempt)
+                    .min(deadline.saturating_duration_since(Instant::now())),
+            );
+            attempt += 1;
+        }
+        self.open_setup("Saved Wi-Fi could not be reached within the retry window".into())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(feature = "wifi-setup")]
+    fn join_portal(&mut self, ssid: &str, password: &str) -> Result<Ipv4Addr, String> {
+        if !self.setup {
+            return Err("Wi-Fi setup is closed".into());
+        }
+        let ap = self.setup_ssid.ok_or("No setup network is configured")?;
+        let conf = client(ssid, password)?;
+        self.station_ip = None;
+        self.joined_at = None;
+        self.retried_at = None;
+        SIGNALS.wifi(false);
+        let _ = self.wifi.wifi_mut().disconnect();
+        let until = Instant::now() + Duration::from_secs(1);
+        while self.wifi.is_connected().unwrap_or(false) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.wifi
+            .set_configuration(&Configuration::Mixed(conf, access_point(ap)))
+            .map_err(|e| e.to_string())?;
+        let ip = self.connect_until(ssid, Instant::now() + JOIN_TIMEOUT)?;
+        // Application NVS credentials are untouched until association + DHCP.
+        self.save(ssid, password)?;
+        self.joined(ssid, password, ip);
+        Ok(ip)
+    }
+    /// Called during normal housekeeping. A lost network gets the configured
+    /// retry window before reopening setup; legacy apps keep their old policy.
+    #[cfg(feature = "wifi-setup")]
+    pub(super) fn portal_recovery(&mut self) {
+        if self.setup || self.portal.is_none() {
+            return;
+        }
+        let ip = self.connected_address();
+        let portal = self.portal.as_mut().expect("portal checked");
+        if let Some(ip) = ip {
+            portal.failure_since = None;
+            self.station_ip = Some(ip);
+            return;
+        }
+        self.station_ip = None;
+        self.joined_at = None;
+        let since = portal.failure_since.get_or_insert_with(Instant::now);
+        let elapsed = since.elapsed();
+        let window =
+            crate::wifi_setup::RetryWindow::new(portal.retry_minutes).expect("validated minutes");
+        if window.exhausted(elapsed) {
+            SIGNALS.wifi(false);
+            if let Err(e) = self.open_setup("Wi-Fi connection was lost and retries expired".into())
+            {
+                log::warn!("Could not open setup Wi-Fi ({e})");
+            }
+        }
+    }
     pub(super) fn new(
         wifi: BlockingWifi<EspWifi<'static>>,
         nvs: Option<EspNvs<NvsDefault>>,
@@ -106,6 +295,10 @@ impl Radio {
             retried_at: None,
             reason: None,
             dns_started: false,
+            #[cfg(feature = "wifi-setup")]
+            portal: None,
+            #[cfg(feature = "wifi-setup")]
+            portal_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -145,6 +338,10 @@ impl Radio {
     /// Startup: the saved (or built-in) network, a few attempts; else the
     /// setup network when there is one. Err only when neither works.
     pub(super) fn boot(&mut self, force_setup: bool) -> Result<(), String> {
+        #[cfg(feature = "wifi-setup")]
+        if self.portal.is_some() {
+            return self.boot_portal(force_setup);
+        }
         let reason = match self.credentials() {
             _ if force_setup && self.setup_ssid.is_some() => {
                 "setup forced by this build".to_string()
@@ -210,6 +407,11 @@ impl Radio {
             self.wifi.start()?;
         }
         self.setup = true;
+        self.station_ip = None;
+        self.joined_at = None;
+        self.retried_at = None;
+        #[cfg(feature = "wifi-setup")]
+        self.portal_active.store(true, Ordering::Relaxed);
         self.reason = Some(reason);
         SIGNALS.setup(true);
         if !self.dns_started {
@@ -227,6 +429,10 @@ impl Radio {
 
     /// Joins `ssid` while keeping the setup network up; saves on success.
     fn join_from_setup(&mut self, ssid: &str, password: &str) -> Result<Ipv4Addr, String> {
+        #[cfg(feature = "wifi-setup")]
+        if self.portal.is_some() {
+            return self.join_portal(ssid, password);
+        }
         let ap = self.setup_ssid.ok_or("this board has no setup network")?;
         let conf = client(ssid, password)?;
         let _ = self.wifi.disconnect();
@@ -287,6 +493,8 @@ impl Radio {
             .set_configuration(&Configuration::Client(conf))
             .map_err(|e| e.to_string())?;
         self.setup = false;
+        #[cfg(feature = "wifi-setup")]
+        self.portal_active.store(false, Ordering::Relaxed);
         SIGNALS.setup(false);
         log::info!("Setup network closed");
         if !self.wifi.is_connected().unwrap_or(false) {
@@ -298,7 +506,15 @@ impl Radio {
     /// Housekeeping while the setup network is open (every 10 s).
     pub(super) fn setup_chores(&mut self) {
         if let Some(joined) = self.joined_at {
-            if joined.elapsed() > CLOSE_AFTER_JOINED {
+            #[cfg(feature = "wifi-setup")]
+            let grace = if self.portal.is_some() {
+                Duration::from_secs(60)
+            } else {
+                CLOSE_AFTER_JOINED
+            };
+            #[cfg(not(feature = "wifi-setup"))]
+            let grace = CLOSE_AFTER_JOINED;
+            if joined.elapsed() > grace {
                 if let Err(e) = self.close_setup() {
                     log::warn!("Could not close the setup network: {e}");
                 }
@@ -375,11 +591,29 @@ fn dns_responder() {
 /// calls lock the radio, and [`WifiSetup::join`] blocks up to 20 s, so
 /// call it only from the setup page.
 #[derive(Clone)]
-pub struct WifiSetup(pub(super) Arc<Mutex<Radio>>);
+pub struct WifiSetup {
+    inner: Arc<Mutex<Radio>>,
+    #[cfg(feature = "wifi-setup")]
+    active: Arc<AtomicBool>,
+}
 
 impl WifiSetup {
+    pub(super) fn new(inner: Arc<Mutex<Radio>>) -> Self {
+        #[cfg(feature = "wifi-setup")]
+        let active = Arc::clone(
+            &inner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .portal_active,
+        );
+        Self {
+            inner,
+            #[cfg(feature = "wifi-setup")]
+            active,
+        }
+    }
     fn radio(&self) -> std::sync::MutexGuard<'_, Radio> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
     /// The setup network is open.
     pub fn active(&self) -> bool {
@@ -417,5 +651,69 @@ impl WifiSetup {
     /// Closes the setup network (station only from now on).
     pub fn close(&self) -> Result<(), String> {
         self.radio().close_setup()
+    }
+}
+
+#[cfg(feature = "wifi-setup")]
+impl crate::wifi_setup::Backend for WifiSetup {
+    fn active(&self) -> bool {
+        self.active.load(Ordering::Relaxed)
+    }
+    fn info(&self) -> crate::wifi_setup::Info {
+        let radio = self.radio();
+        crate::wifi_setup::Info {
+            ssid: radio.ssid.clone(),
+            address: radio
+                .connected_address()
+                .filter(|_| radio.station_ip.is_some()),
+            retry_minutes: radio.retry_minutes(),
+        }
+    }
+    fn scan(&self) -> Result<Vec<String>, String> {
+        let mut radio = self.radio();
+        if !radio.setup {
+            return Err("Wi-Fi setup is closed".into());
+        }
+        // Bound the driver's scan result storage as well as the browser list.
+        let (mut found, _) = radio.wifi.scan_n::<20>().map_err(|e| e.to_string())?;
+        found.sort_unstable_by_key(|ap| -i16::from(ap.signal_strength));
+        let mut names = Vec::with_capacity(20);
+        for ap in found {
+            let name = ap.ssid.to_string();
+            if !name.is_empty() && Some(name.as_str()) != radio.setup_ssid && !names.contains(&name)
+            {
+                names.push(name);
+            }
+        }
+        Ok(names)
+    }
+    fn join(&self, ssid: &str, password: &str) -> Result<Ipv4Addr, String> {
+        self.radio().join_portal(ssid, password)
+    }
+    fn set_retry_minutes(&self, minutes: u16) -> Result<(), String> {
+        crate::wifi_setup::validate_minutes(u32::from(minutes))?;
+        let mut radio = self.radio();
+        if !radio.setup {
+            return Err("Wi-Fi setup is closed".into());
+        }
+        if radio.retry_minutes() == minutes {
+            return Ok(());
+        }
+        radio
+            .nvs
+            .as_ref()
+            .ok_or("Wi-Fi settings storage is unavailable")?
+            .set_u32("retry_min", u32::from(minutes))
+            .map_err(|e| e.to_string())?;
+        let portal = radio.portal.as_mut().ok_or("Wi-Fi portal is not enabled")?;
+        portal.retry_minutes = minutes;
+        Ok(())
+    }
+    fn close(&self) -> Result<(), String> {
+        let mut radio = self.radio();
+        if radio.connected_address().is_none() || radio.station_ip.is_none() {
+            return Err("Connect to Wi-Fi before closing setup".into());
+        }
+        radio.close_setup()
     }
 }

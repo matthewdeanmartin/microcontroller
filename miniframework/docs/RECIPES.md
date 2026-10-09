@@ -271,9 +271,21 @@ of them, including protobuf by hand in 15 lines).
 
 Every miniframework board serves its own log: `GET /api/v1/log.txt` (or
 `/api/v1/log?after=<seq>` in any format). It holds `log::` lines and
-ESP-IDF's C log lines, a health line every minute, and, after a crash, the
-previous boot's last lines from RTC memory. Log what you will need when it
-breaks: `log::warn!` for anything surprising, with numbers.
+ESP-IDF's C log lines, a health line when memory or TLS failures changed
+(else every ten minutes), and, after a crash, the previous boot's last
+lines from RTC memory. Log what you will need when it breaks: `log::warn!`
+for anything surprising, with numbers.
+
+The log scrolls; incidents don't. `GET /.well-known/incidents` (any wire
+format) is the board's error log: counters for every kind since boot
+(TLS handshake and connection failures, peer resets, refused requests,
+admission rejections, Wi-Fi drops, stalled workers, failed allocations
+with their size and heap capabilities, new internal-RAM lows), the 48
+newest coalesced incidents, five-second heap/Wi-Fi samples, and under
+`previous` what the last boot kept in RTC memory before a crash or reset.
+The framework records its own events; apps add theirs with
+`incidents::record(Kind::StorageFailed | Kind::App, code)`. Nothing from
+requests (URLs, headers, bodies, addresses) is ever recorded.
 
 ## Test
 

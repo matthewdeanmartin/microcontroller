@@ -60,11 +60,12 @@ fn aliases(key: &str) -> &'static [&'static str] {
         "HOUSEMETRICS_ORIGINS" => &["HOUSEMETRICS_ORIGINS"],
         "HOUSEMETRICS_BUILD" => &["HOUSEMETRICS_BUILD"],
         "HOUSEMETRICS_STATUS_LED" => &["HOUSEMETRICS_STATUS_LED"],
+        "HOUSEMETRICS_WIFI_SETUP_CODE" => &["HOUSEMETRICS_WIFI_SETUP_CODE"],
         _ => &[],
     }
 }
 
-const KEYS: [&str; 7] = [
+const KEYS: [&str; 8] = [
     "HOUSEMETRICS_WIFI_SSID",
     "HOUSEMETRICS_WIFI_PASSWORD",
     "HOUSEMETRICS_ADMIN_PASSWORD",
@@ -72,6 +73,7 @@ const KEYS: [&str; 7] = [
     "HOUSEMETRICS_ORIGINS",
     "HOUSEMETRICS_BUILD",
     "HOUSEMETRICS_STATUS_LED",
+    "HOUSEMETRICS_WIFI_SETUP_CODE",
 ];
 
 fn main() {

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wi-Fi setup</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,sans-serif;color:#173042;background:#eef3f5;color-scheme:light}
+    *{box-sizing:border-box}body{margin:0;padding:32px 18px}main{max-width:480px;margin:auto}
+    .eyebrow{font-size:12px;font-weight:700;letter-spacing:.12em;color:#427080;text-transform:uppercase}
+    h1{font-size:30px;letter-spacing:-.04em;margin:10px 0}p{line-height:1.5;color:#536975}
+    section{background:white;border:1px solid #d8e3e8;border-radius:16px;padding:24px;margin:22px 0;box-shadow:0 8px 24px #17304208}
+    label{display:block;font-weight:600;font-size:14px;margin:18px 0 7px}input,select,button{font:inherit}
+    input:not([type=checkbox]),select{width:100%;padding:12px;border:1px solid #bacbd4;border-radius:8px;background:white;color:#173042;min-height:46px}
+    input:focus,select:focus,button:focus-visible{outline:3px solid #8bc7d9;outline-offset:2px}
+    button{border:0;border-radius:8px;background:#11647d;color:white;padding:12px 16px;font-weight:600;min-height:46px;cursor:pointer}
+    button:disabled{opacity:.55;cursor:wait}.primary{width:100%;margin-top:22px}.secondary{background:#eaf1f4;color:#235166}
+    .row{display:flex;gap:10px;align-items:center}.row select{flex:1;min-width:0}.check{display:flex;gap:9px;align-items:center;font-weight:400}
+    .check input{width:18px;height:18px;margin:0}.hint{font-size:13px;margin:7px 0 0}details{margin-top:22px}
+    summary{cursor:pointer;font-size:14px;color:#427080}details button{margin-top:12px}
+    #message{min-height:24px;margin:0;color:#173042}#message.error{color:#a22536}.status{border-left:3px solid #80b8c9;padding:0 14px}
+    #success h2{font-size:20px;margin:0}#address{display:block;font-size:18px;font-weight:600;overflow-wrap:anywhere;margin:16px 0;color:#11647d}
+    footer{font-size:12px;color:#6c828d;line-height:1.6;margin-top:22px} [hidden]{display:none!important}
+  </style>
+  <script src="/wifi-setup/setup.js" defer></script>
+</head>
+<body><main>
+  <div class="eyebrow">Device setup</div>
+  <h1>Connect to your Wi-Fi</h1>
+  <p>Choose the network this device should use. Keep your phone connected to the device's setup Wi-Fi while it connects.</p>
+  <section id="gate" hidden>
+    <form id="unlock-form">
+      <label for="code">Setup code</label>
+      <input id="code" type="password" maxlength="64" autocomplete="off" required>
+      <p class="hint">Use the code supplied with this app or device.</p>
+      <button class="primary" type="submit">Continue</button>
+    </form>
+  </section>
+  <section id="settings" hidden>
+    <form id="join-form">
+      <label for="networks">Nearby networks</label>
+      <div class="row"><select id="networks" aria-label="Nearby networks"><option value="">Scanning…</option></select><button id="rescan" class="secondary" type="button">Rescan</button></div>
+      <label class="check"><input id="manual" type="checkbox">Enter a hidden or other network</label>
+      <div id="manual-name" hidden><label for="ssid">Network name</label><input id="ssid" maxlength="32" autocomplete="off"></div>
+      <label for="password">Wi-Fi password</label>
+      <input id="password" type="password" maxlength="64" autocomplete="off">
+      <label class="check"><input id="show-password" type="checkbox">Show password</label>
+      <p class="hint">Leave the password empty for an open network.</p>
+      <details>
+        <summary>Connection settings</summary>
+        <label for="retry-minutes">Retry saved Wi-Fi for this many minutes</label>
+        <input id="retry-minutes" type="number" min="1" max="60" step="1" value="3" required>
+        <p class="hint">On boot or connection loss, try saved Wi-Fi for this long before opening setup. Your setting survives a restart.</p>
+        <button id="save-retry" class="secondary" type="button">Save retry setting</button>
+      </details>
+      <button id="connect" class="primary" type="submit">Connect device</button>
+    </form>
+  </section>
+  <section id="success" hidden>
+    <h2>Connected</h2>
+    <p>Switch your phone back to your home Wi-Fi, then open this device at:</p>
+    <a id="address" rel="noreferrer"></a>
+    <p class="hint">Setup Wi-Fi closes automatically about a minute after connecting. You can close it now.</p>
+    <button id="finish" class="primary" type="button">Close setup Wi-Fi</button>
+  </section>
+  <div class="status"><p id="message" role="status" aria-live="polite">Opening setup…</p></div>
+  <footer>No internet is needed for this page. If your phone warns that this network has no internet, stay connected. Wi-Fi support depends on the device's radio.</footer>
+</main></body></html>

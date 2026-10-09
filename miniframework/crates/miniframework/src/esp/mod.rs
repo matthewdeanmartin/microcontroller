@@ -58,6 +58,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod incidents;
 mod led;
 mod wifi;
 use wifi::Radio;
@@ -227,6 +228,13 @@ impl BoardConfig {
             ..Self::s2(ssid, password, hostname)
         }
     }
+
+    /// Dual-core P4 with PSRAM and an ESP-Hosted Wi-Fi companion. The app's
+    /// IDF configuration must enable remote Wi-Fi and set its transport pins.
+    #[cfg(mf_dual_core)]
+    pub fn p4(ssid: &'static str, password: &'static str, hostname: &'static str) -> Self {
+        Self::s3(ssid, password, hostname)
+    }
 }
 
 /// A board with Wi-Fi up, time and mDNS running.
@@ -237,7 +245,7 @@ pub struct Board {
     /// A background join in progress since then.
     joining: Option<Instant>,
     _sntp: EspSntp<'static>,
-    mdns: Option<EspMdns>,
+    mdns: Option<std::sync::Arc<EspMdns>>,
     _wifi_events: EspSubscription<'static, System>,
     partitions: Mutex<std::collections::BTreeMap<String, EspNvsPartition<NvsCustom>>>,
 }
@@ -259,6 +267,7 @@ pub fn init() {
         sys::link_patches();
         crate::uptime_ms();
         logcap::install(16 * 1024);
+        incidents::install();
         #[cfg(feature = "gzip")]
         crate::wire::gzip::set_runner(gzip_runner);
     });
@@ -268,13 +277,49 @@ pub fn init() {
 /// boots before the router (after a power cut) must not give up. Takes
 /// only the modem, so the app keeps the other peripherals (pins for its
 /// own light or sensors): `start(config, Peripherals::take()?.modem)`.
-pub fn start(mut config: BoardConfig, modem: Modem<'static>) -> Result<Board, Error> {
+pub fn start(config: BoardConfig, modem: Modem<'static>) -> Result<Board, Error> {
+    #[cfg(feature = "wifi-setup")]
+    {
+        start_inner(config, modem, None)
+    }
+    #[cfg(not(feature = "wifi-setup"))]
+    {
+        start_inner(config, modem)
+    }
+}
+
+/// Opt into the bundled Wi-Fi portal and its boot/recovery retry policy.
+/// Requires `saved_wifi` and `setup_network` in the existing board config.
+/// Use [`Board::wifi_portal`] to wrap the app before serving it.
+#[cfg(feature = "wifi-setup")]
+pub fn start_with_wifi_setup(
+    config: BoardConfig,
+    modem: Modem<'static>,
+    options: crate::wifi_setup::Options,
+) -> Result<Board, Error> {
+    options.validate()?;
+    if config.saved_wifi.is_none()
+        || config
+            .setup_network
+            .is_none_or(|s| s.is_empty() || s.len() > 32 || s.contains('\0'))
+    {
+        return Err("Wi-Fi setup requires saved_wifi and a valid setup_network name".into());
+    }
+    start_inner(config, modem, Some(options))
+}
+
+fn start_inner(
+    mut config: BoardConfig,
+    modem: Modem<'static>,
+    #[cfg(feature = "wifi-setup")] portal_options: Option<crate::wifi_setup::Options>,
+) -> Result<Board, Error> {
     init();
     let _ = IDENTITY.set((config.instance, config.hostname));
     // The light first, so POST and step codes show even if a later step fails.
     if let Some(led) = config.led.take() {
         led::start(led, config.psram_stacks);
     }
+    incidents::start_sampler(config.psram_stacks, config.network_core);
     SIGNALS.stage(Stage::System);
     let event_loop = EspSystemEventLoop::take()?;
     let wifi_events = event_loop.subscribe::<esp_idf_svc::wifi::WifiEvent, _>(|event| {
@@ -311,6 +356,10 @@ pub fn start(mut config: BoardConfig, modem: Modem<'static>) -> Result<Board, Er
         (config.ssid, config.password),
         config.setup_network.filter(|_| config.saved_wifi.is_some()),
     );
+    #[cfg(feature = "wifi-setup")]
+    if let Some(options) = portal_options {
+        radio.enable_portal(options)?;
+    }
     let mut joining = None;
     if config.saved_wifi.is_some() {
         // Saved or built-in network, else the setup network.
@@ -396,7 +445,7 @@ pub fn start(mut config: BoardConfig, modem: Modem<'static>) -> Result<Board, Er
         wifi: radio,
         joining,
         _sntp: sntp,
-        mdns,
+        mdns: mdns.map(std::sync::Arc::new),
         _wifi_events: wifi_events,
         partitions: Mutex::new(std::collections::BTreeMap::new()),
     })
@@ -411,9 +460,35 @@ pub fn station_ip() -> Option<String> {
 
 impl Board {
     /// The mDNS responder, to advertise more services (Minicloud's MQTT),
-    /// or `None` if it failed to start.
+    /// or `None` if it failed to start or a resolver already shares it.
+    /// Advertise services before creating a resolver.
     pub fn mdns(&mut self) -> Option<&mut EspMdns> {
-        self.mdns.as_mut()
+        self.mdns.as_mut().and_then(std::sync::Arc::get_mut)
+    }
+
+    /// A socket resolver that keeps the mDNS responder alive for `.local`
+    /// queries. Other names use the system resolver. Only the calling worker
+    /// blocks; the board's Wi-Fi owner is not locked during a query.
+    pub fn resolver(
+        &self,
+    ) -> impl Fn(&str, u16) -> std::io::Result<std::net::SocketAddr> + Send + 'static {
+        let mdns = self.mdns.clone();
+        move |host, port| {
+            if let Some(hostname) = host.strip_suffix(".local") {
+                let mdns = mdns.as_ref().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotConnected, "mDNS unavailable")
+                })?;
+                let ip = mdns
+                    .query_a(hostname, Duration::from_secs(2))
+                    .map_err(std::io::Error::other)?;
+                return Ok((ip, port).into());
+            }
+            use std::net::ToSocketAddrs;
+            (host, port)
+                .to_socket_addrs()?
+                .next()
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "host not found"))
+        }
     }
 
     /// The setup network's controls, for a board configured with
@@ -422,7 +497,30 @@ impl Board {
         self.config
             .setup_network
             .filter(|_| self.config.saved_wifi.is_some())
-            .map(|_| WifiSetup(std::sync::Arc::clone(&self.wifi)))
+            .map(|_| WifiSetup::new(std::sync::Arc::clone(&self.wifi)))
+    }
+
+    /// Start the portal's single worker (12 KiB internal stack: it writes NVS)
+    /// and wrap an app with its local HTML/JS/API. No task when not opted in.
+    #[cfg(feature = "wifi-setup")]
+    pub fn wifi_portal<S: Service>(
+        &self,
+        app: S,
+    ) -> Result<crate::wifi_setup::Portal<S, WifiSetup>, Error> {
+        let options = self
+            .wifi
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .portal_options()
+            .ok_or("Use start_with_wifi_setup before wifi_portal")?;
+        let backend = self.wifi_setup().ok_or("Wi-Fi setup is not configured")?;
+        let controller = std::sync::Arc::new(crate::wifi_setup::Controller::new(backend, options)?);
+        let worker = std::sync::Arc::clone(&controller);
+        spawn_worker(c"mf-setup", 12 * 1024, false, move || loop {
+            worker.run_once();
+            std::thread::sleep(Duration::from_millis(100));
+        })?;
+        Ok(crate::wifi_setup::Portal::new(app, controller))
     }
 
     /// A key-value store in one NVS namespace (max 15 characters).
@@ -475,7 +573,7 @@ impl Board {
             .map_err(|e| log::warn!("Temperature sensor unavailable ({e})"))
             .ok();
         EspPlatform {
-            temperature: Mutex::new(temperature),
+            temperature: std::sync::Arc::new(Mutex::new(temperature)),
             wifi: std::sync::Arc::clone(&self.wifi),
         }
     }
@@ -581,6 +679,7 @@ impl Board {
                 fail(&format!("serving task failed to start: {e}"));
             }
             SIGNALS.ready();
+            crate::incidents::record(crate::incidents::Kind::Ready, 0);
             let mut house = Instant::now();
             let mut health = Instant::now() - Duration::from_secs(50);
             loop {
@@ -593,6 +692,7 @@ impl Board {
         let mut health = Instant::now() - Duration::from_secs(50);
         let mut rested = Instant::now();
         SIGNALS.ready();
+        crate::incidents::record(crate::incidents::Kind::Ready, 0);
         loop {
             let busy = turn();
             tick(site);
@@ -609,7 +709,7 @@ impl Board {
         }
     }
 
-    /// Wi-Fi every 10 s, the health line every minute.
+    /// Wi-Fi every 10 s; the health line checked every minute.
     fn chores(&mut self, house: &mut Instant, health: &mut Instant) {
         if house.elapsed() >= Duration::from_secs(10) {
             *house = Instant::now();
@@ -625,7 +725,16 @@ impl Board {
     /// and checked on the next round, so the loop keeps serving meanwhile.
     fn housekeeping(&mut self) {
         let radio = std::sync::Arc::clone(&self.wifi);
+        #[cfg(feature = "wifi-setup")]
+        let mut radio = match radio.try_lock() {
+            Ok(radio) => radio,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        };
+        #[cfg(not(feature = "wifi-setup"))]
         let mut radio = radio.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(feature = "wifi-setup")]
+        radio.portal_recovery();
         if radio.in_setup() {
             radio.setup_chores();
             return;
@@ -671,14 +780,35 @@ impl Board {
     }
 }
 
-/// One line a minute: memory, stacks, TLS and connections. The trend
-/// before a crash is in the served log (and its RTC copy).
+/// Memory, stacks, TLS and connections: logged when internal RAM reached a
+/// new low or TLS failures or rejections grew since the last line, and
+/// otherwise every ten minutes, so the served log keeps room for what
+/// happened. Incidents (`/.well-known/incidents`) keep the counts anyway.
 fn log_health() {
+    use std::sync::atomic::AtomicU32;
+    // Only the housekeeping task calls this.
+    static LAST: [AtomicU32; 3] = [const { AtomicU32::new(u32::MAX) }; 3];
+    static QUIET: AtomicU32 = AtomicU32::new(0);
     let (pf, pm, pl, _) = heap_info(sys::MALLOC_CAP_SPIRAM);
     let (inf, inm, inl, _) = heap_info(sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT);
+    let n = STATS.snapshot();
+    let now = [inm, n.tls_failures, n.rejected];
+    let changed = inm < LAST[0].load(Relaxed)
+        || now[1..]
+            .iter()
+            .zip(&LAST[1..])
+            .any(|(v, last)| *v != last.load(Relaxed));
+    let quiet = QUIET.load(Relaxed);
+    if !changed && quiet < 9 {
+        QUIET.store(quiet + 1, Relaxed);
+        return;
+    }
+    QUIET.store(0, Relaxed);
+    for (last, v) in LAST.iter().zip(now) {
+        last.store(v, Relaxed);
+    }
     // SAFETY: queries the calling (serving) task's own stack.
     let main_stack = unsafe { sys::uxTaskGetStackHighWaterMark(std::ptr::null_mut()) };
-    let n = STATS.snapshot();
     log::info!(
         "health: psram free {pf} min {pm} block {pl} | internal free {inf} min {inm} block {inl} | stack free main {main_stack} tls {} led {} | tls {} ok {} failed, {} rejected | open {} tls {} http",
         TLS_STACK_FREE.load(Relaxed),
@@ -876,8 +1006,14 @@ fn tls_result(n: isize) -> io::Result<usize> {
         n if n as i32 == sys::MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY => {
             Err(io::ErrorKind::ConnectionAborted.into())
         }
+        // mbedTLS's MBEDTLS_ERR_NET_CONN_RESET (not in the bindings).
+        -0x50 => {
+            events::emit(Event::PeerReset);
+            Err(io::ErrorKind::ConnectionAborted.into())
+        }
         n if n < 0 => {
             log::info!("TLS connection ended: {n} ({:#x})", -n);
+            events::emit(Event::TlsConnectionFailed { code: n });
             Err(io::ErrorKind::ConnectionAborted.into())
         }
         _ => Ok(n as usize),
@@ -1165,8 +1301,46 @@ impl Fetch for EspFetch {
 }
 
 pub struct EspPlatform {
-    temperature: Mutex<Option<TempSensorDriver<'static>>>,
+    temperature: std::sync::Arc<Mutex<Option<TempSensorDriver<'static>>>>,
     wifi: std::sync::Arc<Mutex<Radio>>,
+}
+
+impl EspPlatform {
+    /// Samples through the Wi-Fi owner. Contention skips this sample instead
+    /// of blocking diagnostics behind reconnect work.
+    pub fn station_reader(
+        &self,
+    ) -> impl Fn() -> Option<crate::sys::StationSample> + Send + Sync + 'static {
+        let radio = std::sync::Arc::clone(&self.wifi);
+        move || {
+            let radio = radio.try_lock().ok()?;
+            let wifi = radio.wifi.wifi();
+            let ap = wifi.get_ap_info().ok()?;
+            let ip = wifi.sta_netif().get_ip_info().ok();
+            Some(crate::sys::StationSample {
+                rssi: ap.signal_strength,
+                channel: ap.channel,
+                ip: ip.as_ref().map(|i| i.ip.octets()),
+                gateway: ip.as_ref().map(|i| i.subnet.gateway.octets()),
+                netmask: ip
+                    .as_ref()
+                    .and_then(|i| crate::sys::netmask_octets(i.subnet.mask.0)),
+            })
+        }
+    }
+    /// A sampler sharing the owned HAL driver, without constructing sysinfo.
+    /// No allocations occur on reads; the peripheral is released by its last owner.
+    pub fn temperature_reader(&self) -> impl Fn() -> Option<f32> + Send + Sync + 'static {
+        let sensor = std::sync::Arc::clone(&self.temperature);
+        move || {
+            sensor
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .and_then(|s| s.get_celsius().ok())
+                .filter(|v| v.is_finite())
+        }
+    }
 }
 
 fn heap_info(caps: u32) -> (u32, u32, u32, u32) {
@@ -1203,13 +1377,18 @@ impl Platform for EspPlatform {
     fn sysinfo(&self) -> SysInfo {
         let mut flash: u32 = 0;
         let (ap, mac, ip) = {
-            let radio = self.wifi.lock().unwrap_or_else(|e| e.into_inner());
-            let wifi = radio.wifi.wifi();
-            (
-                wifi.get_ap_info().ok(),
-                wifi.get_mac(WifiDeviceId::Sta).unwrap_or_default(),
-                radio.sta_address(),
-            )
+            // Diagnostics must not block the serving loop behind a setup join.
+            match self.wifi.try_lock() {
+                Ok(radio) => {
+                    let wifi = radio.wifi.wifi();
+                    (
+                        wifi.get_ap_info().ok(),
+                        wifi.get_mac(WifiDeviceId::Sta).unwrap_or_default(),
+                        radio.sta_address(),
+                    )
+                }
+                Err(_) => (None, [0; 6], None),
+            }
         };
         // SAFETY: null selects the initialized default flash chip; output is
         // writable. IDF's version is an immutable static NUL-terminated string.
@@ -1233,6 +1412,7 @@ impl Platform for EspPlatform {
             "esp32s3" => "ESP32-S3",
             "esp32c3" => "ESP32-C3",
             "esp32c6" => "ESP32-C6",
+            "esp32p4" => "ESP32-P4",
             _ => "ESP32 family",
         };
         let internal = heap_info(sys::MALLOC_CAP_INTERNAL | sys::MALLOC_CAP_8BIT);

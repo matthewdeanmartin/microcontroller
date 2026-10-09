@@ -25,6 +25,7 @@
 //! most 16 KiB ahead of the handler (the receive window we advertise), so an
 //! upload holds at most that much memory.
 use crate::http::{self, Body, Response, TURN_BUDGET, WRITE_CHUNK_LIMIT};
+use crate::incidents::{self, Kind};
 use crate::mux::{Conn, Limits, STREAM_STALL};
 use crate::site::{Scratch, Service, Site};
 use std::io::{self, Read};
@@ -37,6 +38,15 @@ pub const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 pub const MAX_FRAME: usize = 16_384;
 /// Header blocks (HEADERS + CONTINUATION) larger than this are refused.
 const MAX_HEADER_BLOCK: usize = 16 * 1024;
+/// Bodiless requests (GET, OPTIONS, HEAD...) beyond the advertised
+/// MAX_CONCURRENT_STREAMS that wait, as headers only, for a stream to
+/// finish. Browsers send their first burst before our SETTINGS arrive,
+/// assuming 100 streams; a page's startup burst (a Mastodon client's,
+/// with a CORS preflight per request) easily passes 8. Refusing those
+/// streams surfaces in the browser as network (CORS) errors. Answers are
+/// still produced at most `max_streams` at a time, so response memory is
+/// bounded as before.
+const QUEUED_STREAMS: usize = 32;
 const HPACK_TABLE: usize = 4096;
 const DEFAULT_WINDOW: i64 = 65_535;
 /// The receive window we advertise per stream: how far a client may send
@@ -280,6 +290,7 @@ impl Connection {
         }
         let stream_limit = |method: &str, path: &str| site.stream_limit(method, path);
         if let Err(Fatal(error)) = self.frames(body_limit, &stream_limit) {
+            incidents::record(Kind::H2GoAway, error as i32);
             self.goaway(error);
         }
         if may_dispatch && !self.closing {
@@ -589,6 +600,10 @@ impl Connection {
                 if stream != 0 {
                     return Err(Fatal(code::PROTOCOL_ERROR));
                 }
+                let error = payload
+                    .get(4..8)
+                    .map_or(0, |b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]));
+                incidents::record(Kind::H2PeerGoAway, error as i32);
                 self.closing = true;
             }
             kind::PUSH_PROMISE => return Err(Fatal(code::PROTOCOL_ERROR)),
@@ -635,11 +650,18 @@ impl Connection {
         if self.closing {
             return Ok(());
         }
-        if self.streams.len() >= self.max_streams {
+        let limit = if end_stream {
+            self.max_streams + QUEUED_STREAMS
+        } else {
+            self.max_streams
+        };
+        if self.streams.len() >= limit {
+            incidents::record(Kind::H2Refused, 0);
             self.reset(stream, code::REFUSED_STREAM);
             return Ok(());
         }
         if size > MAX_HEADER_BLOCK {
+            incidents::record(Kind::H2Refused, 1);
             self.reset(stream, code::REFUSED_STREAM);
             return Ok(());
         }
@@ -684,6 +706,9 @@ impl Connection {
     ) -> bool {
         let secure = conn.secure();
         let mut progress = false;
+        // Dispatching takes a stream's headers; at most `max_streams`
+        // answers are in progress, the rest wait in arrival order.
+        let active = self.streams.iter().filter(|s| s.headers.is_empty()).count();
         let ready: Vec<u32> = self
             .streams
             .iter()
@@ -693,6 +718,7 @@ impl Connection {
                     && (s.complete || s.streamed.is_some())
             })
             .map(|s| s.id)
+            .take(self.max_streams.saturating_sub(active))
             .collect();
         for id in ready {
             let Some(index) = self.streams.iter().position(|s| s.id == id) else {
@@ -1039,6 +1065,7 @@ impl<C: Conn> Read for Upload<'_, C> {
                 }
             }
             if let Err(Fatal(error)) = self.h2.frames(self.body_limit, self.stream_limit) {
+                incidents::record(Kind::H2GoAway, error as i32);
                 self.h2.goaway(error);
                 return Err(io::ErrorKind::ConnectionAborted.into());
             }

@@ -16,10 +16,15 @@ pub mod fetch;
 #[cfg(feature = "http2")]
 pub mod h2;
 pub mod http;
+pub mod incidents;
 pub mod influx;
 pub mod kv;
 pub mod logbuf;
 pub mod mux;
+#[cfg(feature = "queue")]
+pub mod queue;
+#[cfg(feature = "rate-limit")]
+pub mod rate_limit;
 #[cfg(any(test, all(feature = "esp32", target_os = "espidf")))]
 mod retained_log;
 pub mod site;
@@ -28,6 +33,8 @@ pub mod sys;
 #[cfg(any(test, all(feature = "tls", feature = "esp32", target_os = "espidf")))]
 mod tls_config;
 pub mod web;
+#[cfg(feature = "wifi-setup")]
+pub mod wifi_setup;
 pub mod wire;
 
 #[cfg(not(target_os = "espidf"))]

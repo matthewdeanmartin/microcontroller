@@ -274,6 +274,23 @@ fn cors_same_origin_dev_origin_and_strangers() {
         b"OPTIONS /api/v1/echo HTTP/1.1\r\nHost: board.local\r\nOrigin: http://localhost:4200\r\n\r\n",
     );
     assert_eq!(w.status, 204);
+    assert_eq!(w.header("Access-Control-Allow-Private-Network"), "");
+}
+
+#[test]
+fn private_network_preflights_are_granted_to_allowed_origins_only() {
+    let site = site();
+    let w = call(
+        &site,
+        b"OPTIONS /api/v1/echo HTTP/1.1\r\nHost: board.local\r\nOrigin: http://localhost:4200\r\nAccess-Control-Request-Method: GET\r\nAccess-Control-Request-Private-Network: true\r\n\r\n",
+    );
+    assert_eq!(w.status, 204);
+    assert_eq!(w.header("Access-Control-Allow-Private-Network"), "true");
+    let w = call(
+        &site,
+        b"OPTIONS /api/v1/echo HTTP/1.1\r\nHost: board.local\r\nOrigin: http://evil.example\r\nAccess-Control-Request-Private-Network: true\r\n\r\n",
+    );
+    assert_eq!(w.header("Access-Control-Allow-Private-Network"), "");
 }
 
 #[test]
@@ -288,6 +305,12 @@ fn builtins() {
     let schema: SchemaDoc = wire::decode(Format::Json, &w.body).unwrap();
     assert!(schema.messages.iter().any(|m| m.name == "Echo"));
     assert!(schema.messages.iter().any(|m| m.name == "SysInfo"));
+    assert!(schema.messages.iter().any(|m| m.name == "Incidents"));
+    let w = get(&site, "/.well-known/incidents", "");
+    assert_eq!(w.status, 200);
+    let incidents: crate::incidents::Incidents = wire::decode(Format::Json, &w.body).unwrap();
+    assert_eq!(incidents.counters.len(), 28, "every kind, zero or not");
+    assert!(incidents.volatile);
     let w = get(&site, "/api/v1/schema.proto", "");
     assert!(String::from_utf8_lossy(&w.body).contains("message Echo {"));
     let w = get(&site, "/metrics", "");
@@ -537,6 +560,7 @@ fn https_required_locks_plain_http_down_to_trust_and_metrics() {
         "/api/v1/status",
         "/api/v1/sys",
         "/api/v1/log",
+        "/.well-known/incidents",
         "/index.html",
         "/x",
     ] {
@@ -627,6 +651,48 @@ fn refused_requests_are_readable_by_an_allowed_origin() {
     ));
     assert_eq!(broken.status, 400);
     assert_eq!(broken.header("Access-Control-Allow-Origin"), "");
+}
+
+#[test]
+fn heads_the_parser_rejects_still_get_cors() {
+    let site = bank();
+    // Too many headers for the parser, but every line is complete.
+    let mut many = String::from(
+        "GET /api/v1/x HTTP/1.1\r\nHost: nanacoin.local\r\nOrigin: http://localhost:4200\r\n",
+    );
+    for i in 0..crate::http::MAX_HEADERS {
+        many.push_str(&format!("X-H{i}: v\r\n"));
+    }
+    many.push_str("\r\n");
+    let w = render(site.refuse(431, many.as_bytes()));
+    assert_eq!(w.status, 431);
+    assert_eq!(
+        w.header("Access-Control-Allow-Origin"),
+        "http://localhost:4200"
+    );
+    // Cut off at the size limit mid-header: complete lines still count.
+    let cut = format!(
+        "GET /api/v1/x?q=1 HTTP/1.1\r\nOrigin: http://localhost:4200\r\nHost: nanacoin.local\r\nCookie: {}",
+        "a".repeat(5000)
+    );
+    let w = render(site.refuse(431, cut.as_bytes()));
+    assert_eq!(
+        w.header("Access-Control-Allow-Origin"),
+        "http://localhost:4200"
+    );
+    // The Origin line itself cut off: no grant.
+    let partial =
+        b"GET /api/v1/x HTTP/1.1\r\nHost: nanacoin.local\r\nOrigin: http://localhost:4200";
+    assert_eq!(
+        render(site.refuse(431, partial)).header("Access-Control-Allow-Origin"),
+        ""
+    );
+    // Two Origins are ambiguous: no grant.
+    let twice = b"GET /api/v1/x HTTP/1.1\r\nHost: nanacoin.local\r\nOrigin: http://localhost:4200\r\nOrigin: http://evil.example\r\n\r\n";
+    assert_eq!(
+        render(site.refuse(400, twice)).header("Access-Control-Allow-Origin"),
+        ""
+    );
 }
 
 /// Shaped like Minicloud: files under /blobs, CORS origins from data.

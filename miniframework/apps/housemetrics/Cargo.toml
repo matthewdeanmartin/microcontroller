@@ -29,6 +29,8 @@ bundled-web = []
 # `https` adds TLS, `http2` adds HTTP/2 over it. The desktop has no TLS.
 https = ["miniframework/tls"]
 http2 = ["https", "miniframework/http2"]
+# Opt-in local vanilla-JS provisioning UI and saved Wi-Fi fallback.
+wifi-setup = ["miniframework/wifi-setup"]
 
 [dependencies]
 miniframework = { path = "../../crates/miniframework", default-features = false, features = ["gzip"] }

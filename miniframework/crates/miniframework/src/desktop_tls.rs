@@ -174,6 +174,7 @@ pub fn serve_https<S: Service>(
         }
         None => None,
     };
+    crate::incidents::start_volatile();
     let mut limits = Limits::desktop();
     limits.tls_clients = 64;
     let mut mux: Mux<DesktopConn> =
