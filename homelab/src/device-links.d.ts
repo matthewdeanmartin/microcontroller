@@ -1,0 +1,1 @@
+export function deviceLinks(device:{host:string;aliases:string[];ip?:string;endpoints:{url:string;port:number;protocol:string;status:number;title?:string;server?:string;contentType?:string;available?:boolean;redirect?:string}[]}):{url:string;found:boolean;endpoint?:{protocol:string;status:number;contentType?:string;server?:string}}[];

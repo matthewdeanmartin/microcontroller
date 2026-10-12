@@ -1,0 +1,16 @@
+[
+  {"host":"esp32.local","sources":["../hello_wifi_py/main.py"]},
+  {"host":"esp32s3.local","sources":["../hello_wifi_s3_py/main.py"]},
+  {"host":"secrets.local","sources":["../secret_messages/main.py"]},
+  {"host":"housemetrics.local","sources":["../miniframework/apps/housemetrics/boards.py"]},
+  {"host":"housemetrics-v2.local","sources":["../miniframework/apps/housemetrics/boards.py"]},
+  {"host":"mastomini.local","sources":["../miniframework/apps/housemetrics/config/scrapes.json","../../mastomini/mastomini_rs/DEPLOY.md"]},
+  {"host":"mastomini-p4.local","sources":["../../mastomini/mastomini_rs/DEPLOY.md"]},
+  {"host":"mastomini-bots.local","sources":["../miniframework/apps/housemetrics/config/scrapes.json","../../mastomini/mastomini_bots/src/bin/esp32.rs"]},
+  {"host":"minicloud.local","sources":["../miniframework/apps/housemetrics/config/scrapes.json"]},
+  {"host":"nanacoin.local","sources":["../../nanacoin/nanacoin_rs/src/board.rs"]},
+  {"host":"nanacoin-s2.local","sources":["../../nanacoin/nanacoin_rs/src/board.rs"]},
+  {"host":"nanacoin-p4.local","sources":["../../nanacoin/nanacoin_rs/src/board.rs"]},
+  {"host":"nanacoin-api.local","sources":["../../nanacoin/docs/tinygo/setup.md"]},
+  {"host":"nanacoin-rs.local","sources":["../../nanacoin/nanacoin_web/README.md"]}
+]

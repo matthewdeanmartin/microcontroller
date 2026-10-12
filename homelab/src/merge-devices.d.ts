@@ -1,0 +1,1 @@
+export function mergeDevices<T extends {status?:string;host:string;aliases:string[];ip?:string;sources:string[];endpoints:{url:string;available?:boolean}[];notes?:string;label?:string;firstSeen?:string;lastSeen?:string;checks?:unknown[]}>(previous:T[],found:T[]):T[];
