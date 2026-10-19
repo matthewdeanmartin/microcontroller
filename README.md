@@ -16,6 +16,7 @@ No soldering, no GPIO wiring.
 | Project | What it is |
 |---|---|
 | [`miniframework`](miniframework/) | Rust + Angular framework for board-served web apps (HTTP/HTTPS, five wire formats, household CA), extracted from NanaCoin and mastomini. First app: **housemetrics**, a metrics store and dashboard for the **S2 Mini**, with a format lab measuring whether serialization matters. |
+| [`gamematcher`](gamematcher/) | Rust + Angular on the **Waveshare C6** (miniframework app). A household game-night planner: post a plan, tick the games you would play and the times you can do, negotiate in person. Email + PIN accounts over plain HTTP for guests; Mastodon sign-in planned. Spec and sprints in [`gamematcher/spec`](gamematcher/spec/). |
 | [`async_worker_rs`](async_worker_rs/) | Rust on the **S2 Mini**. HTTP 202 job tokens, polling, and a bounded background worker querying NIST time; includes a desktop website preview. |
 | [`hello_wifi`](hello_wifi/) | C / ESP-IDF. Status page over WiFi. |
 | [`hello_wifi_py`](hello_wifi_py/) | MicroPython. Same page, plus a local preview and a 3-second deploy. |
@@ -26,8 +27,10 @@ No soldering, no GPIO wiring.
 ## Docs
 
 Board references: [S2 Mini](BOARD_SKILL_ESP32_S2_MINI.md),
-[S3 N16R8](BOARD_SKILL_ESP32_S3_N16R8.md), and
-[Waveshare C6 LCD 1.47](BOARD_SKILL_ESP32_C6_LCD_1_47.md).
+[S3 N16R8](BOARD_SKILL_ESP32_S3_N16R8.md),
+[Waveshare C6 LCD 1.47](BOARD_SKILL_ESP32_C6_LCD_1_47.md),
+[Waveshare S3 Touch LCD 1.47](BOARD_SKILL_ESP32_S3_TOUCH_LCD_1_47.md), and
+[Waveshare S3 Touch LCD 2](BOARD_SKILL_ESP32_S3_TOUCH_LCD_2.md).
 
 The Go projects are [`nanacoin`](nanacoin/), a TinyGo household currency and
 marketplace for the ESP32-S3, and [`nanacoin_load`](nanacoin_load/), its separate

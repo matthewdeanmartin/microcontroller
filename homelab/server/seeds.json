@@ -12,6 +12,12 @@
     ]
   },
   {
+    "host": "gamematcher.local",
+    "sources": [
+      "../gamematcher/DEPLOY.md"
+    ]
+  },
+  {
     "host": "housemetrics-v2.local",
     "sources": [
       "../miniframework/apps/housemetrics/boards.py"

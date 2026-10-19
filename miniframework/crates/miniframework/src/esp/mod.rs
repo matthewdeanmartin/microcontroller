@@ -3,7 +3,8 @@
 //!
 //! Task layout (from NanaCoin's two banks):
 //! - a handshake task runs esp-tls server handshakes (~1 s of ECDHE each)
-//!   and hands finished sessions over a bounded channel;
+//!   and hands finished sessions over a bounded, mutex-guarded queue
+//!   ([`Handoff`]: not std's channel, which can livelock on one core);
 //! - single core (S2): the calling task (main) multiplexes every
 //!   established connection and runs the app's `tick` between turns;
 //! - two cores (S3, [`BoardConfig::app_core`] set): handshakes stay on the
@@ -22,7 +23,7 @@
 #[cfg(feature = "tls")]
 use crate::events::Task;
 use crate::events::{self, Event};
-use crate::fetch::{Fetch, Fetched};
+use crate::fetch::{Fetch, Fetched, Outgoing};
 use crate::kv::{check_key, Kv};
 use crate::mux::{Conn, Limits, Mux};
 use crate::site::{Service, Site};
@@ -41,7 +42,7 @@ use esp_idf_svc::{
     },
     http::{client::EspHttpConnection, Method},
     mdns::EspMdns,
-    nvs::{EspDefaultNvsPartition, EspNvs, EspNvsPartition, NvsCustom, NvsDefault},
+    nvs::{EspDefaultNvsPartition, EspNvs, EspNvsPartition, NvsCustom, NvsDefault, NvsPartitionId},
     sntp::{EspSntp, SntpConf},
     sys,
     tls::X509,
@@ -55,7 +56,7 @@ use std::os::fd::AsRawFd;
 #[cfg(feature = "tls")]
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 mod incidents;
@@ -416,7 +417,10 @@ fn start_inner(
                 "_https",
                 "_tcp",
                 443,
-                &[("path", config.mdns_https_path)],
+                &[
+                    ("path", config.mdns_https_path),
+                    ("about", "/.well-known/miniframework"),
+                ],
             )?;
         }
         let http_path = if config.limits.tls_clients > 0 {
@@ -429,7 +433,7 @@ fn start_inner(
             "_http",
             "_tcp",
             80,
-            &[("path", http_path)],
+            &[("path", http_path), ("about", "/.well-known/miniframework")],
         )?;
         Ok(mdns)
     })()
@@ -552,10 +556,36 @@ impl Board {
         Ok(partition)
     }
 
+    /// A key-value store in one namespace of a named NVS data partition
+    /// (see [`Board::partition`]): app data kept apart from Wi-Fi and
+    /// framework settings, never erased by this call.
+    pub fn partition_kv(
+        &self,
+        partition: &str,
+        namespace: &str,
+    ) -> Result<NvsKv<NvsCustom>, Error> {
+        Ok(NvsKv(Mutex::new(EspNvs::new(
+            self.partition(partition)?,
+            namespace,
+            true,
+        )?)))
+    }
+
     /// An HTTP(S) client that trusts the household CA.
     pub fn fetch(&self) -> EspFetch {
         EspFetch {
             ca_pem: self.config.ca_pem,
+            public: false,
+        }
+    }
+
+    /// An HTTP(S) client that trusts public CAs (ESP-IDF's certificate
+    /// bundle), for internet services such as a public Mastodon instance.
+    #[cfg(feature = "public-ca")]
+    pub fn fetch_public(&self) -> EspFetch {
+        EspFetch {
+            ca_pem: None,
+            public: true,
         }
     }
 
@@ -586,7 +616,9 @@ impl Board {
         // A site lives until reboot; leaking it lets a second task share it.
         let site: &'static Site<S> = Box::leak(Box::new(site));
         let limits = self.config.limits.clone();
-        let (ready, finished) = mpsc::sync_channel::<Socket>(2);
+        let handoff = std::sync::Arc::new(Handoff::new(2));
+        #[cfg_attr(not(feature = "tls"), allow(unused_variables))]
+        let ready = std::sync::Arc::clone(&handoff);
         #[cfg(feature = "tls")]
         let tls =
             TcpListener::bind(("0.0.0.0", 443)).and_then(|l| l.set_nonblocking(true).map(|_| l));
@@ -598,7 +630,6 @@ impl Board {
         };
         #[cfg(not(feature = "tls"))]
         {
-            drop(ready);
             if limits.tls_clients > 0 {
                 log::warn!("built without the `tls` feature: serving HTTP only");
             }
@@ -640,7 +671,7 @@ impl Board {
             Mux::new(limits, site.config.body_limit, site.config.response_limit);
         let mut turn = move || {
             SIGNALS.serve_beat();
-            if let Ok(socket) = finished.try_recv() {
+            if let Some(socket) = handoff.try_recv() {
                 mux.add(socket);
             }
             // Accept only with room: extra connections wait in the backlog.
@@ -1066,12 +1097,56 @@ impl Conn for Socket {
     }
 }
 
+/// Finished TLS sessions, from the handshake task to the serving loop.
+///
+/// A mutex-guarded queue, not `std::sync::mpsc::sync_channel`: that channel
+/// is lock-free, and its `try_recv` spins while a sender is between claiming
+/// a slot and publishing it. On one core, with the receiver at a higher
+/// priority than the sender (the C6 profile: serving task 5, handshakes 4),
+/// a sender preempted at that moment never runs again; the serving task
+/// spun in `try_recv` and the task watchdog fired (October 17, 2026). A
+/// FreeRTOS mutex inherits priority instead, and the receiver only ever
+/// `try_lock`s, so the serving loop never waits on the handshake task.
+pub(crate) struct Handoff {
+    queue: Mutex<std::collections::VecDeque<Socket>>,
+    capacity: usize,
+}
+
+impl Handoff {
+    fn new(capacity: usize) -> Self {
+        Self {
+            queue: Mutex::new(std::collections::VecDeque::with_capacity(capacity)),
+            capacity,
+        }
+    }
+
+    /// Queues a session; gives it back when the queue is full.
+    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
+    fn try_send(&self, socket: Socket) -> Result<(), Socket> {
+        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        if queue.len() >= self.capacity {
+            return Err(socket);
+        }
+        queue.push_back(socket);
+        Ok(())
+    }
+
+    /// A queued session, if any, without waiting for the lock.
+    fn try_recv(&self) -> Option<Socket> {
+        match self.queue.try_lock() {
+            Ok(mut queue) => queue.pop_front(),
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner().pop_front(),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+}
+
 /// The handshake task. At most one handshake in flight on a single-core
 /// board: two concurrent ECDHE computations would just take twice as long.
 #[cfg(feature = "tls")]
 fn handshakes(
     listener: TcpListener,
-    ready: mpsc::SyncSender<Socket>,
+    ready: std::sync::Arc<Handoff>,
     cert: &'static [u8],
     key: &'static [u8],
     pending_limit: usize,
@@ -1224,10 +1299,11 @@ fn negotiated_h2(tls: NonNull<sys::esp_tls_t>) -> bool {
     }
 }
 
-/// NVS-backed [`Kv`].
-pub struct NvsKv(Mutex<EspNvs<NvsDefault>>);
+/// NVS-backed [`Kv`]: the default partition ([`Board::kv`]) or a named
+/// one ([`Board::partition_kv`]).
+pub struct NvsKv<P: NvsPartitionId = NvsDefault>(Mutex<EspNvs<P>>);
 
-impl Kv for NvsKv {
+impl<P: NvsPartitionId + Send + 'static> Kv for NvsKv<P> {
     fn get(&self, key: &str) -> Option<Vec<u8>> {
         check_key(key).ok()?;
         let nvs = self.0.lock().unwrap();
@@ -1256,27 +1332,30 @@ impl Kv for NvsKv {
     }
 }
 
-/// esp-idf's HTTP client. HTTPS verifies against the household CA.
+/// esp-idf's HTTP client. HTTPS verifies against the household CA, or
+/// against public CAs for a client from `Board::fetch_public`.
 pub struct EspFetch {
     ca_pem: Option<&'static [u8]>,
+    #[cfg_attr(not(feature = "public-ca"), allow(dead_code))]
+    public: bool,
 }
 
-impl Fetch for EspFetch {
-    fn get(&self, url: &str, accept: &str, limit: usize) -> io::Result<Fetched> {
-        let err = |e: sys::EspError| io::Error::other(e.to_string());
-        let mut conn = EspHttpConnection::new(&esp_idf_svc::http::client::Configuration {
-            timeout: Some(Duration::from_secs(3)),
+impl EspFetch {
+    fn connection(&self, timeout: Duration) -> io::Result<EspHttpConnection> {
+        EspHttpConnection::new(&esp_idf_svc::http::client::Configuration {
+            timeout: Some(timeout),
             server_certificate: self.ca_pem.map(X509::pem_until_nul),
+            #[cfg(feature = "public-ca")]
+            crt_bundle_attach: self.public.then_some(sys::esp_crt_bundle_attach as _),
             buffer_size: Some(1024),
+            buffer_size_tx: Some(1024),
             ..Default::default()
         })
-        .map_err(err)?;
-        conn.initiate_request(
-            Method::Get,
-            url,
-            &[("Accept", accept), ("User-Agent", "miniframework")],
-        )
-        .map_err(err)?;
+        .map_err(|e| io::Error::other(e.to_string()))
+    }
+
+    fn read_response(conn: &mut EspHttpConnection, limit: usize) -> io::Result<Fetched> {
+        let err = |e: sys::EspError| io::Error::other(e.to_string());
         conn.initiate_response().map_err(err)?;
         let status = conn.status();
         let content_type = conn.header("Content-Type").unwrap_or("").to_string();
@@ -1297,6 +1376,53 @@ impl Fetch for EspFetch {
             content_type,
             body,
         })
+    }
+}
+
+impl Fetch for EspFetch {
+    fn get(&self, url: &str, accept: &str, limit: usize) -> io::Result<Fetched> {
+        let mut conn = self.connection(Duration::from_secs(3))?;
+        conn.initiate_request(
+            Method::Get,
+            url,
+            &[("Accept", accept), ("User-Agent", "miniframework")],
+        )
+        .map_err(|e| io::Error::other(e.to_string()))?;
+        Self::read_response(&mut conn, limit)
+    }
+
+    /// Any method with headers and a body. A longer timeout than scraping:
+    /// an internet service's TLS handshake alone takes 1-3 s on these chips.
+    fn send(&self, request: &Outgoing<'_>) -> io::Result<Fetched> {
+        let err = |e: sys::EspError| io::Error::other(e.to_string());
+        let method = match request.method {
+            "GET" => Method::Get,
+            "POST" => Method::Post,
+            "PUT" => Method::Put,
+            "PATCH" => Method::Patch,
+            "DELETE" => Method::Delete,
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("HTTP method {other}"),
+                ))
+            }
+        };
+        let mut conn = self.connection(Duration::from_secs(10))?;
+        let length = request.body.len().to_string();
+        let mut headers: Vec<(&str, &str)> = vec![("User-Agent", "miniframework")];
+        headers.extend_from_slice(request.headers);
+        if !request.body.is_empty() || matches!(method, Method::Post | Method::Put | Method::Patch)
+        {
+            headers.push(("Content-Length", &length));
+        }
+        conn.initiate_request(method, request.url, &headers)
+            .map_err(err)?;
+        let mut sent = 0;
+        while sent < request.body.len() {
+            sent += conn.write(&request.body[sent..]).map_err(err)?;
+        }
+        Self::read_response(&mut conn, request.limit)
     }
 }
 

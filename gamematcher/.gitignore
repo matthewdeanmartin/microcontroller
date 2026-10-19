@@ -1,0 +1,11 @@
+# Build output and local state
+target/
+.embuild/
+.local/
+node_modules/
+.angular/
+ui/dist/
+.env
+__pycache__/
+# Server private keys: reissue with `make certs` (the household CA stays elsewhere)
+*.key

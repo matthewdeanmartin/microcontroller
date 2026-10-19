@@ -36,10 +36,21 @@ See [docs/FORMATS.md](docs/FORMATS.md) for the answer so far.
 - **Board services:** Wi-Fi with retries, SNTP, mDNS, an NVS key-value
   store, named data partitions (never erased), an HTTP(S) client — and
   desktop equivalents, so the same app runs on a PC for development.
+- **Optional browser sessions** (`session`): HttpOnly cookie sessions stored
+  as SHA-256, with expiry and eviction, kept in the app's own state so they
+  survive reboots, plus a same-origin guard for cookie-authenticated APIs.
+  OAuth sign-in on top is designed in [spec/OAUTH.md](spec/OAUTH.md).
+- **Board storage and HTTPS client extras:** `Board::partition_kv` gives an app a
+  `Kv` in its own NVS partition; `public-ca` adds `Board::fetch_public` (ESP-IDF
+  certificate bundle) beside the household-CA client.
 - **Optional resource protection:** `rate-limit` adds bounded global/caller
   token buckets and a concurrency-limiting `Service` wrapper; `queue` adds a
   bounded RAM job queue with ownership checks, worker limits and expiry.
   Neither feature is enabled by default. See [docs/RESOURCE_PROTECTION.md](docs/RESOURCE_PROTECTION.md).
+- **Optional ops health:** `ops` serves `/.well-known/ops/health`, the
+  board's own checks (heap, fragmentation, Wi-Fi, clock, last reset, serving
+  loop) plus the app's (`Service::checks`), for mastomini-bots' SRE digest.
+  See [spec/OPS.md](spec/OPS.md).
 - **Optional Wi-Fi setup:** `wifi-setup` bundles a small offline vanilla-JS
   page for picking Wi-Fi, entering credentials, and configuring boot/recovery
   retries (three minutes by default). An optional compiled setup code gates
@@ -62,7 +73,7 @@ apps/housemetrics/        reference app: metrics store + dashboard, desktop + ES
 web/                      Angular workspace: miniframework-ng library + housemetrics UI
 tools/                    certs.sh, bundle-web.mjs, build-firmware.sh, flash.sh (first install)
 tools/boardsafe/          uv: image checks, app-only updates, live probes (Python)
-spec/                     designs not built yet (OTA.md)
+spec/                     designs: OTA.md (not built), OPS.md (sprint 0 built)
 bench/                    uv: fmtbench (connection modes x formats), writer, ui-smoke
 docs/                     RECIPES.md, FORMATS.md
 ```

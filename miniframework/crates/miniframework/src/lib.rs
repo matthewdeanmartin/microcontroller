@@ -10,6 +10,7 @@
 //! Start with `docs/RECIPES.md` and the `housemetrics` app.
 #![deny(unsafe_code)]
 #![cfg_attr(not(all(feature = "esp32", target_os = "espidf")), forbid(unsafe_code))]
+pub mod about;
 pub mod captive;
 pub mod events;
 pub mod fetch;
@@ -21,12 +22,18 @@ pub mod influx;
 pub mod kv;
 pub mod logbuf;
 pub mod mux;
+#[cfg(feature = "oauth")]
+pub mod oauth;
+#[cfg(feature = "ops")]
+pub mod ops;
 #[cfg(feature = "queue")]
 pub mod queue;
 #[cfg(feature = "rate-limit")]
 pub mod rate_limit;
 #[cfg(any(test, all(feature = "esp32", target_os = "espidf")))]
 mod retained_log;
+#[cfg(feature = "session")]
+pub mod session;
 pub mod site;
 pub mod status;
 pub mod sys;

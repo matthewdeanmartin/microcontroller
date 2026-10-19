@@ -1,0 +1,29 @@
+{
+  "name": "gamematcher-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Game Matcher's Angular UI, served from the board. Uses miniframework-ng from ../../miniframework/web.",
+  "scripts": {
+    "start": "ng serve",
+    "build": "ng build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit"
+  },
+  "dependencies": {
+    "@angular/common": "^22.2.0",
+    "@angular/compiler": "^22.2.0",
+    "@angular/core": "^22.2.0",
+    "@angular/platform-browser": "^22.2.0",
+    "@angular/router": "^22.2.0",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^22.2.0",
+    "@angular/cli": "^22.2.0",
+    "@angular/compiler-cli": "^22.2.0",
+    "@types/node": "^22.20.4",
+    "typescript": "~6.0.2",
+    "vitest": "^4.0.8"
+  }
+}

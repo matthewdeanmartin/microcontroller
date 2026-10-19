@@ -362,3 +362,17 @@ fn gzip_round_trip_and_python_compatible_header() {
     out[at] ^= 1;
     assert!(gzip::decompress(&out, 1 << 20).is_err());
 }
+
+#[test]
+fn compact_schema_decodes_to_the_full_document() {
+    use super::schema::CompactSchema;
+    let doc = schema_doc(&[Everything::SCHEMA]);
+    for format in Format::ALL {
+        let compact = to_vec(format, &CompactSchema(&doc)).unwrap();
+        let back: SchemaDoc = decode(format, &compact).unwrap();
+        assert_eq!(back, doc, "{format:?}");
+    }
+    let full = to_vec(Format::Json, &doc).unwrap().len();
+    let compact = to_vec(Format::Json, &CompactSchema(&doc)).unwrap().len();
+    assert!(compact * 10 < full * 7, "compact {compact} vs full {full}");
+}

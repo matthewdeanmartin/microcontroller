@@ -52,6 +52,35 @@ export function inspectEndpoint(host,port,secure,connectIp=host,options={}) {
 async function neighbors() {
   try {const {stdout}=await exec('arp',['-a'],{timeout:3000});return [...stdout.matchAll(/(\d+\.\d+\.\d+\.\d+)[^\r\n]*?([a-f\d]{2}(?:[:-][a-f\d]{2}){5})/gi)].filter(m=>privateIP(m[1])&&!/^ff[:-]ff/i.test(m[2])).map(m=>({ip:m[1],mac:m[2]}));}catch{return [];}
 }
+/** A miniframework board's self-description (GET /.well-known/miniframework),
+ *  or null. Bounded like the root-page probe; never follows redirects. */
+export function fetchAbout(host,port,secure,connectIp=host,deadline=2500) {
+  return new Promise(resolve=>{
+    let finished=false;const done=x=>{if(!finished){finished=true;clearTimeout(timer);resolve(x);}};
+    const path='/.well-known/miniframework';
+    const req=(secure?https:http).get({host:connectIp,port,path,servername:net.isIP(host)?undefined:host,ca:trustRoots,rejectUnauthorized:false,timeout:1800,
+      headers:{Host:host+(port===(secure?443:80)?'':':'+port),'User-Agent':'Homelab-local-discovery/1.0','Accept':'application/json'}},res=>{
+      if(res.statusCode!==200){res.resume();return done(null);}
+      let body='';let bytes=0;
+      res.on('data',chunk=>{bytes+=chunk.length;if(bytes<=16384)body+=chunk.toString();else{res.destroy();done(null);}});
+      res.on('end',()=>{try{const about=JSON.parse(body);done(typeof about?.schema==='string'&&about.schema.startsWith('miniframework.about/')?about:null);}catch{done(null);}});
+      res.on('error',()=>done(null));
+    });
+    const timer=setTimeout(()=>{req.destroy();done(null);},deadline);
+    req.on('timeout',()=>{req.destroy();done(null);});req.on('error',()=>done(null));
+  });
+}
+
+/** Asks every device that answered HTTP(S) to describe itself; a miniframework
+ *  board is then a Board for certain, with what it says about itself. */
+export async function describeDevices(devices,about=fetchAbout) {
+  await Promise.all(devices.filter(d=>d.endpoints?.some(e=>e.available!==false)).map(async d=>{
+    const e=d.endpoints.find(e=>e.protocol==='HTTP'&&e.available!==false)||d.endpoints.find(e=>e.available!==false);
+    const described=await about(net.isIP(d.host)?(d.ip||d.host):d.host,e.port,e.protocol==='HTTPS',d.ip||d.host);
+    if(described){d.about=described;if(!['Router','This PC'].includes(d.kind))d.kind='Board';}
+  }));
+}
+
 export async function checkDomain(host, knownIp, probe=inspectEndpoint) {
   const checks=[];
   const endpoints=(await Promise.all([80,443].map(async port=>{
@@ -61,12 +90,18 @@ export async function checkDomain(host, knownIp, probe=inspectEndpoint) {
   }))).filter(Boolean);
   return {checks,endpoints};
 }
+/** Whether the scan's network address lies in an interface's subnet. */
+export function sameSubnet(ifaceCidr,scanCidr) {
+  if(!ifaceCidr||!scanCidr)return false;
+  const [a,bits]=ifaceCidr.split('/');const mask=(0xffffffff<<(32-Number(bits)))>>>0;
+  return (number(a)&mask)===(number(scanCidr.split('/')[0])&mask);
+}
 export async function scan(job, seeds, remembered, cidr) {
   const ips=range(cidr);const allowed=new Set(ips);const nets=await networks();
   const names=new Map();const services=new Map();let multicast;
   job.phase='Resolving names';job.total=ips.length;
   try {
-    const network=nets.find(n=>allowed.has(n.address));
+    const network=nets.find(n=>allowed.has(n.address))||nets.find(n=>sameSubnet(n.cidr,cidr));
     multicast=mdns({interface:network?.address,bind:'0.0.0.0'});multicast.on('error',e=>{job.warnings.push(`mDNS: ${e.message}`);});
     const queried=new Set();
     multicast.on('response',packet=>{for(const r of [...(packet.answers||[]),...(packet.additionals||[])]) {
@@ -90,7 +125,7 @@ export async function scan(job, seeds, remembered, cidr) {
         const hosts=names.get(ip)||[];const reverse=await timeout(dns.reverse(ip),450,[]);for(const h of reverse)if(!hosts.includes(h))hosts.push(h);
         const primary=hosts.find(h=>seeds.some(s=>s.host===h))||hosts[0]||ip;
         const endpoints=(await Promise.all(open.filter(p=>![22,445,3389].includes(p)).map(p=>inspectEndpoint(primary,p,p===443||p===8443||advertised.some(s=>s.port===p&&s.name.includes('_https')),ip)))).filter(Boolean);
-        const gateway=nets.some(n=>n.gateway===ip);const local=nets.some(n=>n.address===ip);const board=/espressif|esp32|nanacoin|mastomini|minicloud|housemetrics|secrets/i.test(hosts.join(' ')+' '+endpoints.map(e=>e.title).join(' '));
+        const gateway=nets.some(n=>n.gateway===ip);const local=nets.some(n=>n.address===ip);const board=/espressif|esp32|nanacoin|mastomini|minicloud|housemetrics|secrets|gamematcher/i.test(hosts.join(' ')+' '+endpoints.map(e=>e.title).join(' '));
         job.devices.push({id:ip,ip,host:primary,aliases:hosts,endpoints,openPorts:open,services:advertised,kind:gateway?'Router':local?'This PC':board?'Board':open.some(p=>[445,3389].includes(p))?'Computer':'Device',status:alive||local?'online':'observed',evidence:local?'Local network interface':open.length?'Responded on TCP':alive?'Responded to ping':'mDNS advertisement',lastSeen:new Date().toISOString(),sources:seeds.filter(s=>hosts.includes(s.host)).flatMap(s=>s.sources)});
       }
       job.checked++;
@@ -109,6 +144,8 @@ export async function scan(job, seeds, remembered, cidr) {
       job.domainsChecked++;
     }}));
     job.phase='Reading neighbors';
+    job.phase='Reading board descriptions';
+    await describeDevices(job.devices);
     for(const n of await neighbors()) if(allowed.has(n.ip)) {const existing=job.devices.find(d=>d.ip===n.ip);if(existing)existing.mac=n.mac;else job.devices.push({id:n.ip,ip:n.ip,host:n.ip,aliases:[],endpoints:[],openPorts:[],kind:nets.some(x=>x.gateway===n.ip)?'Router':'Device',status:'observed',evidence:'Neighbor cache (may be stale)',mac:n.mac,lastSeen:null,sources:[]});}
     job.phase=job.cancelled?'Cancelled':'Complete';
   } finally {multicast?.destroy();}

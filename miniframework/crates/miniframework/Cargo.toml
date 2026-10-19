@@ -11,6 +11,18 @@ publish = false
 [features]
 rate-limit = []
 queue = []
+# Browser sessions (cookie, stored as SHA-256), and a same-origin guard for
+# cookie-authenticated APIs. No network code; see spec/OAUTH.md.
+session = []
+# "Sign in with Mastodon": OAuth 2 code + PKCE client; network steps on an
+# app-provided worker. Needs an HTTP client that implements `Fetch::send`.
+oauth = ["session"]
+# The ESP32 HTTPS client may trust public CAs too (ESP-IDF's certificate
+# bundle; the app's sdkconfig must keep CONFIG_MBEDTLS_CERTIFICATE_BUNDLE).
+public-ca = ["esp32"]
+# `/.well-known/ops/health`: the board's own checks plus the app's, for the
+# SRE bot. Read-only; no network code. See spec/OPS.md.
+ops = []
 # Local vanilla-JS Wi-Fi provisioning portal; no UI or worker unless opted in.
 wifi-setup = []
 # Transports: plain HTTP is always there. `tls` adds HTTPS (the boards'
@@ -30,7 +42,7 @@ esp32 = ["dep:esp-idf-svc"]
 coredump = ["esp32"]
 # HTTPS on the desktop runner (rustls), with ALPN h2 when `http2` is on:
 # local development and tests of the boards' HTTPS behaviour.
-desktop-tls = ["tls", "dep:rustls", "dep:rustls-pemfile"]
+desktop-tls = ["tls", "dep:rustls", "dep:rustls-pemfile", "dep:webpki-roots"]
 
 [dependencies]
 httparse = "1.10"
@@ -43,6 +55,8 @@ miniz_oxide = { version = "0.8", optional = true }
 fluke-hpack = { version = "0.3", optional = true }
 rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = { version = "2", optional = true }
+# Public roots for the desktop HTTPS client (OAuth against real instances).
+webpki-roots = { version = "1", optional = true }
 
 [target.'cfg(target_os = "espidf")'.dependencies]
 esp-idf-svc = { version = "=0.52.1", optional = true, features = ["experimental"] }

@@ -1,0 +1,8 @@
+# ESP32-C6 firmware (tools/build-c6.sh). The desktop build ignores this.
+[target.riscv32imac-esp-espidf]
+linker = "ldproxy"
+# ESP-IDF 5 uses a 64-bit time_t.
+rustflags = ["--cfg", "espidf_time64"]
+
+[env]
+MCU = "esp32c6"

@@ -1,0 +1,384 @@
+{
+  "board": {
+    "build": "4b10110+",
+    "chip": "ESP32-C6",
+    "reset_reason": "USB"
+  },
+  "secs": 300,
+  "http": {
+    "ok": 1603,
+    "failed": 29,
+    "max_ms": 1114,
+    "errors": {
+      "RemoteDisconnected": 27,
+      "ConnectionAbortedError": 2
+    }
+  },
+  "https": {
+    "ok": 220,
+    "failed": 0,
+    "max_ms": 2847,
+    "errors": {}
+  },
+  "outbound": [
+    {
+      "name": "household-ca",
+      "url": "https://housemetrics.local/api/v1/sys",
+      "ok": 0,
+      "failed": 85,
+      "last_ms": 27,
+      "max_ms": 528,
+      "last_error": "ESP_ERR_HTTP_CONNECT",
+      "last_status": 0,
+      "last_bytes": 0
+    },
+    {
+      "name": "public-ca",
+      "url": "https://mastodon.social/.well-known/oauth-authorization-server",
+      "ok": 85,
+      "failed": 0,
+      "last_ms": 1320,
+      "max_ms": 2563,
+      "last_error": "",
+      "last_status": 200,
+      "last_bytes": 1602
+    }
+  ],
+  "heap_min_ever": 35268,
+  "smallest_largest_block": 51200,
+  "rebooted": false,
+  "alloc_failure_lines": [],
+  "samples": [
+    {
+      "t": 30,
+      "free": 89072,
+      "largest": 73728,
+      "min": 72220,
+      "tls_handshakes": 3,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 41,
+      "free": 85160,
+      "largest": 65536,
+      "min": 69628,
+      "tls_handshakes": 4,
+      "tls_failures": 0,
+      "tls_open": 0,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 51,
+      "free": 84304,
+      "largest": 60416,
+      "min": 69372,
+      "tls_handshakes": 6,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 61,
+      "free": 87744,
+      "largest": 67584,
+      "min": 67192,
+      "tls_handshakes": 7,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 71,
+      "free": 83020,
+      "largest": 65536,
+      "min": 67192,
+      "tls_handshakes": 9,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 82,
+      "free": 92468,
+      "largest": 67584,
+      "min": 63680,
+      "tls_handshakes": 10,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 92,
+      "free": 106172,
+      "largest": 67584,
+      "min": 63680,
+      "tls_handshakes": 11,
+      "tls_failures": 0,
+      "tls_open": 0,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 103,
+      "free": 108056,
+      "largest": 67584,
+      "min": 63680,
+      "tls_handshakes": 13,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 113,
+      "free": 109236,
+      "largest": 67584,
+      "min": 63680,
+      "tls_handshakes": 14,
+      "tls_failures": 0,
+      "tls_open": 0,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 123,
+      "free": 107820,
+      "largest": 61440,
+      "min": 63680,
+      "tls_handshakes": 16,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 134,
+      "free": 78172,
+      "largest": 53248,
+      "min": 35268,
+      "tls_handshakes": 17,
+      "tls_failures": 0,
+      "tls_open": 0,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 145,
+      "free": 85928,
+      "largest": 59392,
+      "min": 35268,
+      "tls_handshakes": 19,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 155,
+      "free": 88220,
+      "largest": 63488,
+      "min": 35268,
+      "tls_handshakes": 20,
+      "tls_failures": 0,
+      "tls_open": 0,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 165,
+      "free": 85460,
+      "largest": 62464,
+      "min": 35268,
+      "tls_handshakes": 22,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 175,
+      "free": 73304,
+      "largest": 53248,
+      "min": 35268,
+      "tls_handshakes": 23,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 185,
+      "free": 108272,
+      "largest": 73728,
+      "min": 35268,
+      "tls_handshakes": 25,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 196,
+      "free": 108132,
+      "largest": 67584,
+      "min": 35268,
+      "tls_handshakes": 26,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 206,
+      "free": 108220,
+      "largest": 64512,
+      "min": 35268,
+      "tls_handshakes": 28,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 216,
+      "free": 105532,
+      "largest": 64512,
+      "min": 35268,
+      "tls_handshakes": 29,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 226,
+      "free": 108304,
+      "largest": 64512,
+      "min": 35268,
+      "tls_handshakes": 31,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 236,
+      "free": 108472,
+      "largest": 56320,
+      "min": 35268,
+      "tls_handshakes": 32,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 247,
+      "free": 105420,
+      "largest": 56320,
+      "min": 35268,
+      "tls_handshakes": 33,
+      "tls_failures": 0,
+      "tls_open": 0,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 257,
+      "free": 108456,
+      "largest": 56320,
+      "min": 35268,
+      "tls_handshakes": 35,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 267,
+      "free": 88632,
+      "largest": 51200,
+      "min": 35268,
+      "tls_handshakes": 36,
+      "tls_failures": 0,
+      "tls_open": 0,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 277,
+      "free": 87804,
+      "largest": 64512,
+      "min": 35268,
+      "tls_handshakes": 38,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 287,
+      "free": 77504,
+      "largest": 61440,
+      "min": 35268,
+      "tls_handshakes": 39,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 297,
+      "free": 78136,
+      "largest": 63488,
+      "min": 35268,
+      "tls_handshakes": 41,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 307,
+      "free": 77224,
+      "largest": 59392,
+      "min": 35268,
+      "tls_handshakes": 42,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 318,
+      "free": 80368,
+      "largest": 64512,
+      "min": 35268,
+      "tls_handshakes": 44,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 328,
+      "free": 106744,
+      "largest": 83968,
+      "min": 35268,
+      "tls_handshakes": 45,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    }
+  ],
+  "passed": false
+}

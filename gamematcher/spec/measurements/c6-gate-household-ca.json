@@ -1,0 +1,120 @@
+{
+  "board": {
+    "build": "4b10110+",
+    "chip": "ESP32-C6",
+    "reset_reason": "USB"
+  },
+  "secs": 60,
+  "http": {
+    "ok": 311,
+    "failed": 6,
+    "max_ms": 664,
+    "errors": {
+      "RemoteDisconnected": 5,
+      "ConnectionResetError": 1
+    }
+  },
+  "https": {
+    "ok": 40,
+    "failed": 0,
+    "max_ms": 3551,
+    "errors": {}
+  },
+  "outbound": [
+    {
+      "name": "household-ca",
+      "url": "https://housemetrics.local/api/v1/sys",
+      "ok": 12,
+      "failed": 0,
+      "last_ms": 1609,
+      "max_ms": 2330,
+      "last_error": "",
+      "last_status": 200,
+      "last_bytes": 816
+    },
+    {
+      "name": "public-ca",
+      "url": "https://mastodon.social/.well-known/oauth-authorization-server",
+      "ok": 12,
+      "failed": 0,
+      "last_ms": 1346,
+      "max_ms": 2203,
+      "last_error": "",
+      "last_status": 200,
+      "last_bytes": 1602
+    }
+  ],
+  "heap_min_ever": 48092,
+  "smallest_largest_block": 39936,
+  "rebooted": false,
+  "alloc_failure_lines": [],
+  "samples": [
+    {
+      "t": 31,
+      "free": 110028,
+      "largest": 75776,
+      "min": 53316,
+      "tls_handshakes": 3,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 42,
+      "free": 82604,
+      "largest": 61440,
+      "min": 53316,
+      "tls_handshakes": 4,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 52,
+      "free": 101140,
+      "largest": 73728,
+      "min": 52024,
+      "tls_handshakes": 5,
+      "tls_failures": 0,
+      "tls_open": 0,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 63,
+      "free": 98224,
+      "largest": 59392,
+      "min": 48092,
+      "tls_handshakes": 7,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 73,
+      "free": 78192,
+      "largest": 61440,
+      "min": 48092,
+      "tls_handshakes": 8,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    },
+    {
+      "t": 83,
+      "free": 87412,
+      "largest": 39936,
+      "min": 48092,
+      "tls_handshakes": 9,
+      "tls_failures": 0,
+      "tls_open": 1,
+      "http_open": 3,
+      "rejected": 0
+    }
+  ],
+  "passed": true
+}

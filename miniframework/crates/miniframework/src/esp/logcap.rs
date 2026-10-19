@@ -105,7 +105,7 @@ pub fn install(ring_bytes: usize) {
     report_core_dump();
 }
 
-#[cfg(feature = "coredump")]
+#[cfg(all(feature = "coredump", target_arch = "xtensa"))]
 fn exception_name(cause: u32) -> &'static str {
     match cause {
         0 => "IllegalInstruction",
@@ -116,6 +116,68 @@ fn exception_name(cause: u32) -> &'static str {
         20 => "InstFetchProhibited",
         28 => "LoadProhibited",
         29 => "StoreProhibited",
+        _ => "other (software panic: abort, watchdog, stack overflow...)",
+    }
+}
+
+/// Xtensa (S2, S3): exception cause, faulting address and the backtrace.
+#[cfg(all(feature = "coredump", target_arch = "xtensa"))]
+fn crash_details(s: &sys::esp_core_dump_summary_t, task: &str) {
+    let depth = (s.exc_bt_info.depth as usize).min(s.exc_bt_info.bt.len());
+    let backtrace: Vec<String> = s.exc_bt_info.bt[..depth]
+        .iter()
+        .map(|pc| format!("{pc:#010x}"))
+        .collect();
+    log::error!(
+        "crash report: task \"{task}\", pc {:#010x}, cause {} {}, address {:#010x}",
+        s.exc_pc,
+        s.ex_info.exc_cause,
+        exception_name(s.ex_info.exc_cause),
+        s.ex_info.exc_vaddr
+    );
+    log::error!(
+        "crash backtrace{}: {}",
+        if s.exc_bt_info.corrupted {
+            " (corrupted)"
+        } else {
+            ""
+        },
+        backtrace.join(" ")
+    );
+}
+
+/// RISC-V (C6, P4): no backtrace in the summary, so log the trap cause,
+/// faulting value, return address and stack pointer (`addr2line` the pc
+/// and ra), and how much stack the dump holds.
+#[cfg(all(feature = "coredump", target_arch = "riscv32"))]
+fn crash_details(s: &sys::esp_core_dump_summary_t, task: &str) {
+    let e = &s.ex_info;
+    log::error!(
+        "crash report: task \"{task}\", pc {:#010x}, mcause {} {}, mtval {:#010x}, ra {:#010x}, sp {:#010x}",
+        s.exc_pc,
+        e.mcause,
+        riscv_cause(e.mcause),
+        e.mtval,
+        e.ra,
+        e.sp
+    );
+    log::error!(
+        "crash stack dump: {} bytes in the core dump",
+        s.exc_bt_info.dump_size
+    );
+}
+
+#[cfg(all(feature = "coredump", target_arch = "riscv32"))]
+fn riscv_cause(mcause: u32) -> &'static str {
+    match mcause {
+        0 => "InstructionMisaligned",
+        1 => "InstructionAccessFault",
+        2 => "IllegalInstruction",
+        3 => "Breakpoint",
+        4 => "LoadMisaligned",
+        5 => "LoadAccessFault",
+        6 => "StoreMisaligned",
+        7 => "StoreAccessFault",
         _ => "other (software panic: abort, watchdog, stack overflow...)",
     }
 }
@@ -136,28 +198,8 @@ fn report_core_dump() {
             .map(|&c| c as u8)
             .take_while(|&c| c != 0)
             .collect();
-        let depth = (s.exc_bt_info.depth as usize).min(s.exc_bt_info.bt.len());
-        let backtrace: Vec<String> = s.exc_bt_info.bt[..depth]
-            .iter()
-            .map(|pc| format!("{pc:#010x}"))
-            .collect();
-        log::error!(
-            "crash report: task \"{}\", pc {:#010x}, cause {} {}, address {:#010x}",
-            String::from_utf8_lossy(&task),
-            s.exc_pc,
-            s.ex_info.exc_cause,
-            exception_name(s.ex_info.exc_cause),
-            s.ex_info.exc_vaddr
-        );
-        log::error!(
-            "crash backtrace{}: {}",
-            if s.exc_bt_info.corrupted {
-                " (corrupted)"
-            } else {
-                ""
-            },
-            backtrace.join(" ")
-        );
+        let task = String::from_utf8_lossy(&task);
+        crash_details(&s, &task);
     } else {
         log::warn!("a core dump is present but its summary could not be read");
         return; // Preserve unread forensic data for a later boot/tool.

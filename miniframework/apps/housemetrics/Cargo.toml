@@ -33,7 +33,7 @@ http2 = ["https", "miniframework/http2"]
 wifi-setup = ["miniframework/wifi-setup"]
 
 [dependencies]
-miniframework = { path = "../../crates/miniframework", default-features = false, features = ["gzip"] }
+miniframework = { path = "../../crates/miniframework", default-features = false, features = ["gzip", "ops"] }
 sha2 = { version = "0.10", default-features = false }
 getrandom = "0.2"
 log = "0.4"

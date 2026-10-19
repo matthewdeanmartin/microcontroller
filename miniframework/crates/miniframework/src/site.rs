@@ -338,6 +338,12 @@ impl<'a> Reply<'a> {
         self.body
     }
 
+    /// The body given to [`Reply::owned`], if that is what this reply
+    /// sends (`body()` stays empty then). For tests and tools.
+    pub fn owned_body(&self) -> Option<&[u8]> {
+        self.owned.as_deref()
+    }
+
     pub fn content_type(&self) -> &str {
         &self.content_type
     }
@@ -350,6 +356,11 @@ impl<'a> Reply<'a> {
     /// Encoding time in microseconds (0 if nothing was encoded).
     pub fn encode_us(&self) -> u64 {
         self.enc_us
+    }
+
+    /// Headers the app added (tests read `Set-Cookie` and friends here).
+    pub fn headers(&self) -> &[(Cow<'static, str>, String)] {
+        &self.headers
     }
 
     /// Adds a response header. One the site sets by default
@@ -594,6 +605,12 @@ pub trait Service: Send + Sync + 'static {
     fn metrics(&self) -> Vec<(&'static str, f64)> {
         Vec::new()
     }
+    /// The app's own checks for `/.well-known/ops/health`, after the
+    /// framework's. Quick and read-only; summaries are public.
+    #[cfg(feature = "ops")]
+    fn checks(&self) -> Vec<crate::ops::Check> {
+        Vec::new()
+    }
 }
 
 /// A path's cross-origin policy.
@@ -654,6 +671,11 @@ pub struct Config {
     pub influx_tags: Vec<(&'static str, String)>,
     /// protobuf package name in `/api/v1/schema.proto`.
     pub proto_package: &'static str,
+    /// What `/.well-known/miniframework` says beyond what the board knows.
+    pub about: crate::about::AboutConfig,
+    /// Thresholds for the framework's checks in `/.well-known/ops/health`.
+    #[cfg(feature = "ops")]
+    pub ops: crate::ops::OpsConfig,
 }
 
 impl Config {
@@ -681,6 +703,9 @@ impl Config {
             cors_max_age: 600,
             influx_tags: Vec::new(),
             proto_package: "miniframework",
+            about: crate::about::AboutConfig::default(),
+            #[cfg(feature = "ops")]
+            ops: crate::ops::OpsConfig::default(),
         }
     }
 }
@@ -722,6 +747,79 @@ impl<S: Service> Site<S> {
             platform: Box::new(platform),
             trust_page,
             ca_disposition,
+        }
+    }
+
+    /// The board describing itself (`/.well-known/miniframework`).
+    pub fn about(&self) -> crate::about::About {
+        use crate::about::{About, AboutBoard, AboutLink, SCHEMA};
+        let info = self.sysinfo();
+        let a = &self.config.about;
+        let mut transports = vec!["http".to_string()];
+        if info.net.tls_slots > 0 {
+            transports.push("https".into());
+            if cfg!(feature = "http2") {
+                transports.push("h2".into());
+            }
+        }
+        let mut links: Vec<AboutLink> = [
+            ("home", "/"),
+            ("sys", "/api/v1/sys"),
+            ("metrics", "/metrics"),
+            ("schema", "/api/v1/schema"),
+            ("log", "/api/v1/log.txt"),
+        ]
+        .iter()
+        .chain(
+            self.config
+                .ca_der
+                .map(|_| [("trust", "/trust"), ("ca", "/ca")])
+                .iter()
+                .flatten(),
+        )
+        .chain(
+            cfg!(feature = "ops")
+                .then_some(("health", "/.well-known/ops/health"))
+                .iter(),
+        )
+        .chain(a.links.iter())
+        .map(|(rel, href)| AboutLink {
+            rel: rel.to_string(),
+            href: href.to_string(),
+        })
+        .collect();
+        // The app's own link wins over a default with the same relation.
+        let mut seen = std::collections::HashSet::new();
+        links.reverse();
+        links.retain(|l| seen.insert(l.rel.clone()));
+        links.reverse();
+        About {
+            schema: SCHEMA.into(),
+            app: info.app.clone(),
+            title: if a.title.is_empty() {
+                info.app.clone()
+            } else {
+                a.title.into()
+            },
+            description: a.description.into(),
+            version: info.version.clone(),
+            build: info.build.clone(),
+            board: AboutBoard {
+                model: a.board.into(),
+                chip: info.chip.clone(),
+                cores: info.cores,
+                cpu_mhz: info.cpu_mhz,
+                flash_bytes: info.flash_bytes,
+                psram_bytes: info.heap.psram_total,
+                mac: info.wifi.mac.clone(),
+                hostname: info.host.clone(),
+                hardware: a.hardware.iter().map(|h| h.to_string()).collect(),
+            },
+            transports,
+            links,
+            uptime_ms: info.uptime_ms,
+            status: info.status.clone(),
+            framework: format!("miniframework {}", env!("CARGO_PKG_VERSION")),
         }
     }
 
@@ -797,6 +895,10 @@ impl<S: Service> Site<S> {
         let is_api = setup_route
             || owned("/api")
             || path == "/metrics"
+            // The board's own descriptions; an app's SPA fallback must not answer them.
+            || path == "/.well-known/miniframework"
+            || path == "/.well-known/incidents"
+            || (cfg!(feature = "ops") && path == "/.well-known/ops/health")
             || self.config.app_paths.iter().any(|p| *p != "/" && owned(p));
         // Machine health stays scrapeable in every transport mode.
         let metrics = path == "/metrics" && (method == "GET" || head);
@@ -1103,10 +1205,22 @@ impl<S: Service> Site<S> {
         }
         match req.path {
             "/api/v1/sys" => reply.wire(req, &self.sysinfo()),
+            "/.well-known/miniframework" => reply.wire(req, &self.about()),
             "/.well-known/incidents" => reply.wire(
                 req,
                 &crate::incidents::LOG.snapshot(&self.platform.sysinfo().reset_reason),
             ),
+            #[cfg(feature = "ops")]
+            "/.well-known/ops/health" => {
+                let info = self.sysinfo();
+                let failures =
+                    crate::incidents::LOG.count(crate::incidents::Kind::AllocationFailed);
+                let checks = crate::ops::builtin(&info, &self.config.ops, failures);
+                reply.wire(
+                    req,
+                    &crate::ops::health(&info, checks, self.service.checks()),
+                )
+            }
             "/metrics" => reply.text(
                 200,
                 "text/plain; version=0.0.4; charset=utf-8",
@@ -1116,7 +1230,19 @@ impl<S: Service> Site<S> {
                     &self.service.metrics(),
                 ),
             ),
-            "/api/v1/schema" => reply.wire(req, &self.schema()),
+            "/api/v1/schema" => {
+                // Clients only decode with it; the doc strings are most of
+                // the bytes and are for people (`?docs=1`, or schema.proto).
+                // With them Game Matcher's schema passed the C6's 32 KiB limit.
+                let mut doc = self.schema();
+                if req.param("docs").is_none_or(|v| v == "0") {
+                    for m in &mut doc.messages {
+                        m.doc.clear();
+                        m.fields.iter_mut().for_each(|f| f.doc.clear());
+                    }
+                }
+                reply.wire(req, &wire::schema::CompactSchema(&doc))
+            }
             "/api/v1/log" | "/api/v1/log.txt" => {
                 let after = req.param_num::<u32>("after").ok().flatten().unwrap_or(0);
                 let limit = req
@@ -1152,7 +1278,10 @@ impl<S: Service> Site<S> {
             ErrorBody::SCHEMA,
             crate::logbuf::LogPage::SCHEMA,
             crate::incidents::Incidents::SCHEMA,
+            crate::about::About::SCHEMA,
         ]);
+        #[cfg(feature = "ops")]
+        roots.push(crate::ops::Health::SCHEMA);
         roots
     }
 

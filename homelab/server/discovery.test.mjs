@@ -7,3 +7,44 @@ test('Rejects public, malformed and oversized scan ranges',()=>{for(const cidr o
 test('Probes real HTTP sockets and records redirects without following them',async()=>{let requests=0;const server=http.createServer((req,res)=>{requests++;res.writeHead(302,{'Server':'test-board','Location':'http://example.com/'});res.end('<title>Kitchen sensor</title>');});await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;try{assert.equal(await portOpen('127.0.0.1',port),true);const result=await inspectEndpoint('127.0.0.1',port,false);assert.equal(result.title,'Kitchen sensor');assert.equal(result.server,'test-board');assert.equal(result.status,302);assert.equal(result.redirect,'http://example.com/');assert.equal(requests,1);}finally{await new Promise(r=>server.close(r));}assert.equal(await portOpen('127.0.0.1',port),false);});
 test('Uses a discovered IP while preserving the virtual-host name',async()=>{let host;const server=http.createServer((req,res)=>{host=req.headers.host;res.end('<title>Virtual board</title>');});await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;try{const result=await inspectEndpoint('does-not-resolve.local',port,false,'127.0.0.1');assert.equal(result.title,'Virtual board');assert.equal(host,`does-not-resolve.local:${port}`);assert.match(result.url,/does-not-resolve\.local/);}finally{await new Promise(r=>server.close(r));}});
 test('Stops reading oversized pages before accepting trailing metadata',async()=>{const server=http.createServer((req,res)=>{res.end('x'.repeat(65536)+'<title>Too late</title>');});await new Promise(r=>server.listen(0,'127.0.0.1',r));try{const result=await inspectEndpoint('127.0.0.1',server.address().port,false);assert.equal(result.status,200);assert.equal(result.title,null);}finally{await new Promise(r=>server.close(r));}});
+
+test('mDNS binds the interface whose subnet holds the scan', async () => {
+  const { sameSubnet } = await import('./discovery.mjs');
+  assert.equal(sameSubnet('192.168.1.48/24', '192.168.1.160/29'), true);
+  assert.equal(sameSubnet('192.168.1.48/24', '192.168.2.0/24'), false);
+  assert.equal(sameSubnet('172.24.80.1/20', '192.168.1.0/24'), false);
+});
+
+test('a board that describes itself is a Board, with what it says', async () => {
+  const { describeDevices } = await import('./discovery.mjs');
+  const devices = [
+    { host: 'gamematcher.local', ip: '192.168.1.163', kind: 'Device', endpoints: [{ protocol: 'HTTP', port: 80, available: true }] },
+    { host: 'printer.local', ip: '192.168.1.20', kind: 'Device', endpoints: [{ protocol: 'HTTP', port: 80, available: true }] },
+    { host: '192.168.1.1', ip: '192.168.1.1', kind: 'Router', endpoints: [{ protocol: 'HTTP', port: 80, available: true }] },
+  ];
+  const about = { schema: 'miniframework.about/1', title: 'Game Matcher', board: { model: 'Waveshare ESP32-C6-LCD-1.47', hardware: ['screen:320x172'] } };
+  await describeDevices(devices, async host => host === 'gamematcher.local' ? about : null);
+  assert.equal(devices[0].kind, 'Board');
+  assert.equal(devices[0].about.title, 'Game Matcher');
+  assert.equal(devices[1].kind, 'Device');
+  assert.equal(devices[1].about, undefined);
+});
+
+test('fetchAbout reads /.well-known/miniframework and ignores look-alikes', async () => {
+  const { fetchAbout } = await import('./discovery.mjs');
+  const http = await import('node:http');
+  const server = http.createServer((req, res) => {
+    if (req.url === '/.well-known/miniframework' && req.headers.host.startsWith('board')) {
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ schema: 'miniframework.about/1', title: 'Test board' }));
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ title: 'not a board' }));
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  try {
+    assert.equal((await fetchAbout('board.local', port, false, '127.0.0.1')).title, 'Test board');
+    assert.equal(await fetchAbout('other.local', port, false, '127.0.0.1'), null);
+  } finally { server.close(); }
+});

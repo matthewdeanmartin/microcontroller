@@ -1,0 +1,76 @@
+[package]
+name = "gamematcher"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Household game-night planner on an ESP32-C6, built on miniframework"
+license = "MIT"
+publish = false
+default-run = "gamematcher"
+build = "build.rs"
+
+[[bin]]
+name = "gamematcher"
+path = "src/bin/desktop.rs"
+required-features = ["desktop"]
+
+[[bin]]
+name = "gamematcher-c6"
+path = "src/bin/c6.rs"
+required-features = ["esp32"]
+
+[features]
+default = ["desktop"]
+# The desktop server talks HTTPS to real instances (rustls).
+desktop = ["miniframework/desktop-tls"]
+esp32 = ["miniframework/esp32", "miniframework/coredump", "miniframework/public-ca", "dep:esp-idf-svc", "dep:embuild", "bundled-web", "display"]
+# The board's own screen (components/display + the card rotation).
+display = []
+# Embed the Angular app (run `make web` first).
+bundled-web = []
+# Transports (`make firmware TRANSPORT=...`): plain HTTP is always served;
+# `https` adds TLS, `http2` adds HTTP/2 over it.
+https = ["miniframework/tls"]
+http2 = ["https", "miniframework/http2"]
+# Sprint 0 hardware gate: an outbound-HTTPS load generator on the board.
+# Never in a release build.
+gate = []
+
+[dependencies]
+miniframework = { path = "../../miniframework/crates/miniframework", default-features = false, features = ["gzip", "session", "oauth", "ops"] }
+sha2 = { version = "0.10", default-features = false }
+hmac = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+crc32fast = "1.4"
+getrandom = "0.2"
+log = "0.4"
+# QR codes on the screen (plan links); no_std-friendly, ~4 KB buffers.
+qrcodegen = "1.8"
+
+# Direct dependency so this crate's build script receives ESP-IDF's link
+# arguments.
+[target.'cfg(target_os = "espidf")'.dependencies]
+esp-idf-svc = { version = "=0.52.1", optional = true, features = ["experimental"] }
+
+[build-dependencies]
+# Rasterizes fonts/*.ttf into glyph atlases for the screen (build time only).
+fontdue = "0.9"
+embuild = { version = "0.33", optional = true, features = ["espidf"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[package.metadata.esp-idf-sys]
+esp_idf_version = "v5.5.3"
+esp_idf_sdkconfig_defaults = ["sdkconfig.defaults"]
+
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/mdns", version = "1.8.2" }
+bindings_header = "src/mdns_bindings.h"
+
+[[package.metadata.esp-idf-sys.extra_components]]
+component_dirs = ["components/display"]
+bindings_header = "components/display/include/gm_display.h"

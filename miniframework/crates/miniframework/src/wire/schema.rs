@@ -1,6 +1,6 @@
 //! Runtime description of declared messages, published at `/api/v1/schema`
 //! (as a message, in any format) and `/api/v1/schema.proto` (proto3 text).
-use super::Message;
+use super::{Encode, Message, Result, Writer};
 use crate::message;
 
 pub struct Schema {
@@ -97,6 +97,67 @@ message! {
     /// Every message reachable from the API's response and request types.
     pub struct SchemaDoc {
         1 messages: Vec<MessageDoc>,
+    }
+}
+
+/// [`SchemaDoc`] as `/api/v1/schema` sends it: every key whose value is the
+/// default (an empty `message` or `doc`, `repeated`/`optional` false) is
+/// left out. Decoders treat a missing key as its default, so this is the
+/// same document at well under half the size: on a C6 the full JSON passed
+/// its 32 KiB response limit at ~50 messages (Game Matcher, October 2026).
+pub struct CompactSchema<'a>(pub &'a SchemaDoc);
+
+impl Encode for CompactSchema<'_> {
+    fn encode<W: Writer>(&self, w: &mut W) -> Result<()> {
+        w.begin(1)?;
+        w.key(1, "messages")?;
+        w.list(self.0.messages.len(), false)?;
+        for m in &self.0.messages {
+            w.begin(2 + usize::from(!m.doc.is_empty()))?;
+            w.key(1, "name")?;
+            w.str(&m.name)?;
+            if !m.doc.is_empty() {
+                w.key(2, "doc")?;
+                w.str(&m.doc)?;
+            }
+            w.key(3, "fields")?;
+            w.list(m.fields.len(), false)?;
+            for f in &m.fields {
+                let count = 3
+                    + usize::from(!f.message.is_empty())
+                    + usize::from(f.repeated)
+                    + usize::from(f.optional)
+                    + usize::from(!f.doc.is_empty());
+                w.begin(count)?;
+                w.key(1, "tag")?;
+                w.u64(f.tag as u64)?;
+                w.key(2, "name")?;
+                w.str(&f.name)?;
+                w.key(3, "kind")?;
+                w.str(&f.kind)?;
+                if !f.message.is_empty() {
+                    w.key(4, "message")?;
+                    w.str(&f.message)?;
+                }
+                if f.repeated {
+                    w.key(5, "repeated")?;
+                    w.bool(true)?;
+                }
+                if f.optional {
+                    w.key(6, "optional")?;
+                    w.bool(true)?;
+                }
+                if !f.doc.is_empty() {
+                    w.key(7, "doc")?;
+                    w.str(&f.doc)?;
+                }
+                w.end()?;
+            }
+            w.end_list()?;
+            w.end()?;
+        }
+        w.end_list()?;
+        w.end()
     }
 }
 

@@ -1,0 +1,166 @@
+/* Game Matcher: mobile first, no external fonts or icons (works offline). */
+:root {
+  --bg: #f6f4ef;
+  --card: #ffffff;
+  --text: #1f1d1a;
+  --muted: #6b665d;
+  --line: #e2ddd3;
+  --accent: #2f6f4f;
+  --accent-text: #ffffff;
+  --error: #b3261e;
+  --ok: #2f6f4f;
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171614;
+    --card: #22201d;
+    --text: #ece8e1;
+    --muted: #a39d92;
+    --line: #38342f;
+    --accent: #6fbf8f;
+    --accent-text: #10130f;
+    --error: #ff8a80;
+    --ok: #6fbf8f;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+header {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem;
+  padding: 0.75rem 1rem; border-bottom: 1px solid var(--line); background: var(--card);
+}
+.brand { font-weight: 700; color: var(--text); text-decoration: none; font-size: 1.1rem; }
+nav { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; align-items: center; }
+nav a { color: var(--muted); text-decoration: none; padding: 0.25rem 0; }
+nav a.active { color: var(--text); border-bottom: 2px solid var(--accent); }
+main { max-width: 56rem; margin: 0 auto; padding: 1rem; }
+footer { text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1rem; }
+h1 { font-size: 1.4rem; margin: 0 0 0.75rem; }
+h2 { font-size: 1.1rem; margin: 0 0 0.75rem; }
+a { color: var(--accent); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+.narrow { max-width: 26rem; margin-left: auto; margin-right: auto; }
+form { display: grid; gap: 0.75rem; }
+label { display: grid; gap: 0.25rem; font-weight: 600; font-size: 0.95rem; }
+input, select, textarea {
+  font: inherit; font-weight: 400; padding: 0.6rem 0.7rem; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text); min-height: 44px;
+}
+input:focus-visible, button:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+button {
+  font: inherit; font-weight: 600; min-height: 44px; padding: 0.5rem 1rem; border-radius: 8px;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.secondary { background: transparent; color: var(--accent); }
+button.link { background: none; border: none; color: var(--muted); padding: 0.25rem 0; min-height: 0; font-weight: 400; }
+.switch { display: flex; gap: 0.6rem; align-items: center; font-weight: 400; }
+.switch input { min-height: 0; width: 1.3rem; height: 1.3rem; }
+.error { color: var(--error); }
+.ok { color: var(--ok); }
+.aside { color: var(--muted); font-size: 0.9rem; }
+small { color: var(--muted); font-weight: 400; margin-left: 0.3rem; }
+.people { list-style: none; padding: 0; margin: 0; display: grid; gap: 0.5rem; }
+.people li { display: flex; align-items: center; gap: 0.6rem; }
+.avatar {
+  width: 2rem; height: 2rem; border-radius: 50%; display: inline-grid; place-items: center;
+  color: #fff; font-weight: 700; text-transform: uppercase;
+}
+.accounts { list-style: none; padding: 0; margin: 0; }
+.accounts li { padding: 0.75rem 0; border-bottom: 1px solid var(--line); display: grid; gap: 0.5rem; }
+.accounts li.disabled strong { color: var(--muted); }
+.actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.actions button { min-height: 36px; padding: 0.25rem 0.6rem; font-size: 0.85rem; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; margin: 0 0 0.5rem; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+code { font-size: 0.9em; }
+
+/* Sprint 2-3: lists, pickers, the plan screen. */
+.bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.75rem; }
+.bar h1 { margin: 0; }
+a.button {
+  display: inline-flex; align-items: center; min-height: 44px; padding: 0.5rem 1rem; border-radius: 8px;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); text-decoration: none; font-weight: 600;
+}
+a.button.secondary { background: transparent; color: var(--accent); }
+.row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; }
+.row > label { flex: 1 1 8rem; }
+.pair { display: flex; align-items: center; gap: 0.3rem; }
+.pair input { width: 4.5rem; }
+fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 0.75rem; margin: 0; display: grid; gap: 0.5rem; }
+legend { font-weight: 600; padding: 0 0.3rem; }
+textarea { resize: vertical; }
+input[type='search'] { width: 100%; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0; }
+.chip { min-height: 36px; padding: 0.2rem 0.75rem; border-radius: 999px; background: transparent; color: var(--accent); font-weight: 500; }
+.chip.on { background: var(--accent); color: var(--accent-text); }
+.games, .plans, .pick, .answers { list-style: none; padding: 0; margin: 0; display: grid; }
+.games li, .plans li { display: flex; flex-wrap: wrap; gap: 0.3rem 0.6rem; align-items: center; padding: 0.5rem 0; border-bottom: 1px solid var(--line); }
+.plans li { flex-direction: column; align-items: flex-start; }
+.plans a { font-weight: 600; }
+.star { min-height: 40px; min-width: 40px; padding: 0; background: transparent; border: none; color: var(--accent); font-size: 1.4rem; }
+.pick { max-height: 16rem; overflow-y: auto; }
+.check { display: flex; gap: 0.5rem; align-items: center; font-weight: 400; min-height: 40px; }
+.check input { min-height: 0; width: 1.25rem; height: 1.25rem; }
+.time { border-bottom: 1px dashed var(--line); padding-bottom: 0.5rem; }
+.answers li { padding: 0.6rem 0; border-bottom: 1px solid var(--line); display: grid; gap: 0.4rem; }
+.answers li.chosen { border-left: 4px solid var(--accent); padding-left: 0.5rem; }
+.answers li.dim { opacity: 0.6; }
+.what { display: grid; }
+.segmented { display: inline-flex; border: 1px solid var(--accent); border-radius: 8px; overflow: hidden; }
+.segmented button { border: none; border-radius: 0; background: transparent; color: var(--accent); min-width: 4.5rem; }
+.segmented button + button { border-left: 1px solid var(--accent); }
+.segmented button.on { background: var(--accent); color: var(--accent-text); }
+.segmented.small button { min-height: 38px; min-width: 0; padding: 0.25rem 0.75rem; font-size: 0.9rem; }
+.status { font-size: 0.85rem; padding: 0.15rem 0.6rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.status.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.locked { font-size: 1.1rem; font-weight: 600; }
+.notes { white-space: pre-wrap; }
+
+/* Sprint 4-5: notifications, comments, calendar. */
+.bell { position: relative; }
+.badge {
+  display: inline-block; min-width: 1.2rem; padding: 0 0.3rem; margin-left: 0.15rem; border-radius: 999px;
+  background: var(--error); color: #fff; font-size: 0.75rem; font-weight: 700; text-align: center;
+}
+.plans li.unread a { font-weight: 700; }
+.plans li.unread a::before { content: '● '; color: var(--accent); font-size: 0.75rem; }
+.comments { list-style: none; padding: 0; margin: 0 0 0.75rem; display: grid; gap: 0.75rem; }
+.comments li { display: grid; gap: 0.2rem; }
+.comments .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.comments .meta { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.comments .meta button { min-height: 32px; padding: 0.1rem 0.5rem; font-size: 0.8rem; }
+.feed { overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 0.85rem; background: var(--bg); padding: 0.5rem; border-radius: 6px; }
+
+/* Update recovery overlay. */
+.overlay {
+  position: fixed; inset: 0; z-index: 10; display: grid; place-content: center; gap: 0.75rem; padding: 2rem;
+  text-align: center; background: color-mix(in srgb, var(--bg) 94%, transparent);
+}
+.spinner {
+  width: 2.5rem; height: 2.5rem; margin: 0 auto; border-radius: 50%;
+  border: 4px solid var(--line); border-top-color: var(--accent); animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+/* Sprint 6: sign in with Mastodon. */
+.or { text-align: center; color: var(--muted); margin: 0.75rem 0 0.5rem; font-size: 0.9rem; }
+button.wide { width: 100%; margin-bottom: 0.4rem; }
+
+/* Host chip and autosave status on the plan screen. */
+.hostline { display: flex; flex-wrap: wrap; gap: 0.4rem 0.75rem; align-items: center; margin: 0.25rem 0 0.5rem; }
+.host-chip {
+  display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.15rem 0.6rem 0.15rem 0.2rem;
+  border-radius: 999px; background: var(--bg); border: 1px solid var(--line); font-weight: 600;
+}
+.avatar.small { width: 1.5rem; height: 1.5rem; font-size: 0.8rem; }
+.host-tag { color: var(--accent); font-weight: 600; }
+.saved { min-height: 1.2em; margin: 0.25rem 0 0; }
+.outbox { list-style: none; padding: 0; display: grid; gap: 0.35rem; overflow-wrap: anywhere; }

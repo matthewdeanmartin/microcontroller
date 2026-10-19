@@ -2,8 +2,9 @@
 
 Working notes for the attached **non-Touch** 1.47-inch Waveshare board,
 identified and deployed September 30, 2026. Companion references:
-[S2 Mini](BOARD_SKILL_ESP32_S2_MINI.md) and
-[S3 N16R8](BOARD_SKILL_ESP32_S3_N16R8.md).
+[S2 Mini](BOARD_SKILL_ESP32_S2_MINI.md),
+[S3 N16R8](BOARD_SKILL_ESP32_S3_N16R8.md), and the touch-screen sibling
+[S3 Touch LCD 1.47](BOARD_SKILL_ESP32_S3_TOUCH_LCD_1_47.md).
 
 Hardware probe results and user observations are marked below. Wiring and
 nominal features come from the linked manufacturer documentation. The app is

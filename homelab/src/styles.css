@@ -2,3 +2,7 @@
 
 .connection-links{display:grid;gap:7px;margin:16px 0 20px}.connection-links a{font-family:Consolas,monospace;font-size:11px;color:#376b4d;overflow-wrap:anywhere;text-decoration:none;line-height:1.6}.connection-links a:hover{text-decoration:underline}.connection-links span{font:9px "Segoe UI",sans-serif;color:#84947b}.device-card h3 a{text-decoration:none}.device-card h3 a:hover{text-decoration:underline}.card-bottom a{white-space:nowrap;color:#376b4d}.domain-check{font-size:12px;color:#7b8c72;overflow-wrap:anywhere;line-height:1.8}
 .connection-links .link-heading{font:10px "Segoe UI",sans-serif;color:#6c8365}.connection-links details{margin-top:8px}.connection-links summary{cursor:pointer;font-size:10px;color:#87977b}.connection-links details a{display:block;margin-top:8px}
+
+/* Board self-descriptions (/.well-known/miniframework). */
+.hw{display:flex;flex-wrap:wrap;gap:.3rem;margin:.25rem 0 .5rem}
+.hw-tag{display:inline-block;font-size:.75rem;padding:.1rem .45rem;border-radius:999px;border:1px solid currentColor;opacity:.8;margin:0 .25rem .25rem 0}

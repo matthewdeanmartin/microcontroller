@@ -33,6 +33,8 @@ fn replacing_response_bodies_clears_stream_owned_and_compression_state() {
     );
     reply.owned(200, "text/plain", b"owned".to_vec());
     assert!(reply.stream.is_none());
+    assert_eq!(reply.owned_body(), Some(&b"owned"[..]));
+    assert!(reply.body().is_empty());
     reply.raw_len = Some(100);
     reply.gz_us = 99;
     reply.format = Some(Format::Cbor);
@@ -306,6 +308,13 @@ fn builtins() {
     assert!(schema.messages.iter().any(|m| m.name == "Echo"));
     assert!(schema.messages.iter().any(|m| m.name == "SysInfo"));
     assert!(schema.messages.iter().any(|m| m.name == "Incidents"));
+    assert!(
+        schema.messages.iter().all(|m| m.doc.is_empty()),
+        "doc strings only on request"
+    );
+    let w = get(&site, "/api/v1/schema?docs=1", "");
+    let documented: SchemaDoc = wire::decode(Format::Json, &w.body).unwrap();
+    assert!(documented.messages.iter().any(|m| !m.doc.is_empty()));
     let w = get(&site, "/.well-known/incidents", "");
     assert_eq!(w.status, 200);
     let incidents: crate::incidents::Incidents = wire::decode(Format::Json, &w.body).unwrap();

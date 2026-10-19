@@ -75,7 +75,7 @@ the record of what happened on each deployment. Modeled on NanaCoin's
 | Console | UART0 (GPIO 43/44). The app does not use USB: Windows sees nothing while it runs. The log is served at `/api/v1/log.txt` |
 | Build profile | `sdkconfig.defaults`, `Profile::s2()`, `Limits::small_board()` |
 | Cargo target dir | `C:/mfw-s2` |
-| Certificate | `certs/housemetrics.crt` for `housemetrics.local`, `localhost`, `127.0.0.1`; signed by mastomini's household CA (SHA-256 `C2:8F:EE:1E:…:54:FD`); valid to 2028-12-30 |
+| Certificate | `certs/housemetrics.crt` for `housemetrics.local`, `localhost`, `127.0.0.1`; signed by mastomini's household CA (key unchanged; certificate reissued October 17, 2026 with non-critical name constraints, now SHA-256 `5F:27:30:C7:…:D3:B7`, see mastomini `docs/security/https.md`; originally SHA-256 `C2:8F:EE:1E:…:54:FD`); valid to 2028-12-30 |
 | Data | metrics in RAM only (gone on every reset); device tokens and scrape targets in NVS namespace `hm` |
 
 **The other S2 Mini** (`80:65:99:f0:1c:9c`) is NanaCoin's second bank

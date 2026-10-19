@@ -1,0 +1,36 @@
+# Game Matcher on the Waveshare ESP32-C6-LCD-1.47: one RISC-V core, 512 KiB
+# SRAM, no PSRAM, 8 MiB flash. Derived from minicloud's measured C6 profile.
+CONFIG_IDF_TARGET="esp32c6"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+# The connection loop waits in 1 ms steps; at 100 Hz each wait is 10 ms.
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
+# 3 HTTP + 1 TLS client + 1 handshake + 2 listeners + outbound HTTPS, DNS,
+# SNTP and mDNS.
+CONFIG_LWIP_MAX_SOCKETS=12
+CONFIG_LWIP_LOCAL_HOSTNAME="gamematcher"
+
+# HTTPS builds use esp-tls server sessions with tickets (a returning browser
+# resumes instead of a full handshake). Unused in plain-HTTP builds.
+CONFIG_ESP_TLS_SERVER=y
+CONFIG_ESP_TLS_SERVER_SESSION_TICKETS=y
+# No PSRAM: allocate TLS record buffers only while in use, and keep the
+# outgoing record small. Browsers may still send 16 KiB records.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+# Public CAs for outbound HTTPS (mastodon.social); the common subset keeps
+# flash down.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+
+# A crash saves task, PC and backtrace; the next boot reports it in /api/v1/log.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+
