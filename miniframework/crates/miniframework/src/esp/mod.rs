@@ -34,7 +34,7 @@ use esp_idf_svc::{
     hal::{
         cpu::Core,
         delay::FreeRtos,
-        gpio::{Output, OutputPin, PinDriver},
+        gpio::{AnyOutputPin, Output, OutputPin, PinDriver},
         modem::Modem,
         reset::ResetReason,
         task::thread::{MallocCap, ThreadSpawnConfiguration},
@@ -74,6 +74,16 @@ const _: () = assert!(
     "miniframework needs CONFIG_FREERTOS_HZ=1000 (sdkconfig.defaults); at 100 Hz the board sends ~15x slower"
 );
 mod logcap;
+
+#[cfg(feature = "ops")]
+static RESTART: crate::planned_restart::Restart = crate::planned_restart::Restart::new();
+#[cfg(feature = "ops")]
+#[link_section = ".rtc_noinit"]
+static RESTART_RTC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+// 0: no TLS worker, 1: active/not acknowledged, 2: stopped admission and
+// handed off every finished handshake. Prevents racing the handoff queue.
+#[cfg(feature = "ops")]
+static TLS_RESTART: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Lowest free stack seen (bytes) on the TLS and LED tasks, for the health log.
 pub(crate) static TLS_STACK_FREE: std::sync::atomic::AtomicU32 =
@@ -134,13 +144,26 @@ pub struct BoardConfig {
     pub led: Option<Led>,
 }
 
-/// A plain (single-colour) status LED on a GPIO.
+/// The status LED: a plain one on a GPIO, or one WS2812 RGB pixel.
 pub struct Led {
-    pub(crate) driver: PinDriver<'static, Output>,
-    /// The pin level that lights it (the S2 Mini's GPIO 15: high).
-    pub active_high: bool,
+    pub(crate) output: LedOutput,
     /// What it spells in Morse while healthy, e.g. the app's name.
     pub phrase: &'static str,
+}
+
+pub(crate) enum LedOutput {
+    /// A single-colour LED. `active_high`: the pin level that lights it
+    /// (the S2 Mini's GPIO 15: high).
+    Gpio {
+        driver: PinDriver<'static, Output>,
+        active_high: bool,
+    },
+    /// One WS2812-compatible GRB pixel (the ESP32-S3 N16R8's GPIO 48),
+    /// driven by RMT. `color` is "on" (RGB); failures show red.
+    Ws2812 {
+        pin: AnyOutputPin<'static>,
+        color: [u8; 3],
+    },
 }
 
 impl Led {
@@ -150,10 +173,24 @@ impl Led {
         phrase: &'static str,
     ) -> Result<Self, sys::EspError> {
         Ok(Self {
-            driver: PinDriver::output(pin)?,
-            active_high: true,
+            output: LedOutput::Gpio {
+                driver: PinDriver::output(pin)?,
+                active_high: true,
+            },
             phrase,
         })
+    }
+
+    /// One WS2812 RGB pixel, lit `color` (RGB; keep it dim, e.g. `[0, 0, 24]`).
+    /// The pixel can't be detected, so a wrong pin just shows nothing.
+    pub fn ws2812(pin: impl Into<AnyOutputPin<'static>>, color: [u8; 3], phrase: &'static str) -> Self {
+        Self {
+            output: LedOutput::Ws2812 {
+                pin: pin.into(),
+                color,
+            },
+            phrase,
+        }
     }
 
     pub fn new(
@@ -162,8 +199,10 @@ impl Led {
         phrase: &'static str,
     ) -> Result<Self, sys::EspError> {
         Ok(Self {
-            driver: PinDriver::output(pin)?,
-            active_high,
+            output: LedOutput::Gpio {
+                driver: PinDriver::output(pin)?,
+                active_high,
+            },
             phrase,
         })
     }
@@ -269,6 +308,11 @@ pub fn init() {
         crate::uptime_ms();
         logcap::install(16 * 1024);
         incidents::install();
+        #[cfg(feature = "ops")]
+        RESTART.boot(
+            &RESTART_RTC,
+            matches!(ResetReason::get(), ResetReason::Software),
+        );
         #[cfg(feature = "gzip")]
         crate::wire::gzip::set_runner(gzip_runner);
     });
@@ -463,6 +507,26 @@ pub fn station_ip() -> Option<String> {
 }
 
 impl Board {
+    /// Request a restart after serving connections drain (at most 30 s).
+    /// Returns false if already requested. Async: call from a handler/tick,
+    /// then return so the response can finish. Quiesce app workers first.
+    /// If clients remain busy the request is cancelled, never force-reset.
+    /// No remote endpoint is enabled by this method.
+    #[cfg(feature = "ops")]
+    pub fn restart_planned(reason: crate::planned_restart::Reason) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        if TLS_RESTART.load(SeqCst) != 0 {
+            TLS_RESTART.store(1, SeqCst);
+        }
+        RESTART.request(reason)
+    }
+
+    /// Lets an app resume paused work if draining timed out and was cancelled.
+    #[cfg(feature = "ops")]
+    pub fn restart_pending() -> bool {
+        RESTART.pending().is_some()
+    }
+
     /// The mDNS responder, to advertise more services (Minicloud's MQTT),
     /// or `None` if it failed to start or a resolver already shares it.
     /// Advertise services before creating a resolver.
@@ -640,6 +704,8 @@ impl Board {
                 let cert = self.config.cert_pem;
                 let key = self.config.key_pem;
                 let pending = limits.handshakes.max(1);
+                #[cfg(feature = "ops")]
+                TLS_RESTART.store(1, std::sync::atomic::Ordering::SeqCst);
                 let spawned = spawn_task(
                     c"mf-tls",
                     24 * 1024,
@@ -649,6 +715,8 @@ impl Board {
                     move || handshakes(listener, ready, cert, key, pending),
                 );
                 if let Err(e) = spawned {
+                    #[cfg(feature = "ops")]
+                    TLS_RESTART.store(0, std::sync::atomic::Ordering::SeqCst);
                     log::error!("TLS task failed to start: {e}; serving HTTP only");
                 }
             }
@@ -669,8 +737,32 @@ impl Board {
         );
         let mut mux: Mux<Socket> =
             Mux::new(limits, site.config.body_limit, site.config.response_limit);
+        #[cfg(feature = "ops")]
+        let mut restart_started: Option<Instant> = None;
         let mut turn = move || {
             SIGNALS.serve_beat();
+            #[cfg(feature = "ops")]
+            if RESTART.pending().is_some() {
+                let started = restart_started.get_or_insert_with(Instant::now);
+                let tls_drained = TLS_RESTART.load(std::sync::atomic::Ordering::SeqCst) != 1;
+                // Finish sessions already accepted, but accept no new sockets.
+                while let Some(socket) = handoff.try_recv() {
+                    mux.add(socket);
+                }
+                if mux.close_idle() && tls_drained {
+                    RESTART.commit(&RESTART_RTC);
+                    // SAFETY: all serving connections drained; caller owns
+                    // quiescing its own background storage work.
+                    unsafe { sys::esp_restart() };
+                }
+                if started.elapsed() < Duration::from_secs(30) {
+                    return mux.turn(site);
+                }
+                // Never force-cut an active response to make a deadline.
+                RESTART.cancel();
+                restart_started = None;
+                log::warn!("planned restart cancelled: connections did not drain in 30 seconds");
+            }
             if let Some(socket) = handoff.try_recv() {
                 mux.add(socket);
             }
@@ -797,6 +889,7 @@ impl Board {
         if self.joining.is_some() {
             events::emit(Event::ReconnectFailed { code: 0 });
             let _ = wifi.wifi_mut().disconnect();
+            log_scan(wifi);
         }
         events::emit(Event::Reconnect);
         log::warn!(
@@ -1204,7 +1297,11 @@ fn handshakes(
         // Accept only when the loop can take the finished session; a
         // handshake (about a second) for a connection that is then dropped
         // is the worst of both.
-        if pending.len() < pending_limit && crate::mux::TLS_ROOM.load(Relaxed) {
+        #[cfg(feature = "ops")]
+        let restarting = RESTART.pending().is_some();
+        #[cfg(not(feature = "ops"))]
+        let restarting = false;
+        if !restarting && pending.len() < pending_limit && crate::mux::TLS_ROOM.load(Relaxed) {
             if let Ok((tcp, _)) = listener.accept() {
                 if let Ok(mut socket) = Socket::plain(tcp) {
                     // SAFETY: init allocates an owned context; Socket's Drop
@@ -1280,6 +1377,15 @@ fn handshakes(
                 }
             }
         }
+        #[cfg(feature = "ops")]
+        TLS_RESTART.store(
+            if restarting && pending.is_empty() {
+                2
+            } else {
+                1
+            },
+            std::sync::atomic::Ordering::SeqCst,
+        );
         FreeRtos::delay_ms(1);
     }
 }
@@ -1484,6 +1590,10 @@ fn heap_info(caps: u32) -> (u32, u32, u32, u32) {
 /// Why the chip last reset, in words.
 #[allow(non_upper_case_globals)]
 pub fn reset_reason() -> &'static str {
+    #[cfg(feature = "ops")]
+    if let Some(reason) = RESTART.previous() {
+        return reason.label();
+    }
     match ResetReason::get() {
         ResetReason::PowerOn => "power on",
         ResetReason::ExternalPin => "reset pin",
@@ -1641,4 +1751,28 @@ fn partitions() -> Vec<Partition> {
     }
     found.sort_by_key(|p| p.offset);
     found
+}
+
+/// While Wi-Fi is down, says what the radio can see (about once a minute:
+/// every third failed join), so "can't join" separates into "the network
+/// isn't visible" (router, band, range) and "visible but refused" (password,
+/// security mode).
+fn log_scan(wifi: &mut esp_idf_svc::wifi::BlockingWifi<esp_idf_svc::wifi::EspWifi<'static>>) {
+    use std::sync::atomic::AtomicU32;
+    static FAILS: AtomicU32 = AtomicU32::new(0);
+    if FAILS.fetch_add(1, Relaxed) % 3 != 0 {
+        return;
+    }
+    match wifi.scan() {
+        Ok(mut aps) => {
+            aps.sort_by_key(|ap| -i16::from(ap.signal_strength));
+            let list: Vec<String> = aps
+                .iter()
+                .take(10)
+                .map(|ap| format!("{} (ch {}, {} dBm, {:?})", ap.ssid, ap.channel, ap.signal_strength, ap.auth_method))
+                .collect();
+            log::warn!("Wi-Fi down; the radio sees {} networks: {}", aps.len(), list.join(", "));
+        }
+        Err(e) => log::warn!("Wi-Fi down; scan failed: {e}"),
+    }
 }

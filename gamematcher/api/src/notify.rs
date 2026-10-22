@@ -31,7 +31,10 @@ impl State {
         }
         let limit = self.limits.notifications.max(1);
         let id = self.next_notification;
-        let Some(account) = self.accounts.iter_mut().find(|a| a.id == to && !a.disabled) else {
+        if !self.account(to).is_some_and(|a| !a.disabled) {
+            return;
+        }
+        let Some(account) = self.accounts.get_mut(to) else {
             return;
         };
         let list = &mut account.notifications;
@@ -149,7 +152,7 @@ impl State {
             to.sort_unstable();
             to.dedup();
             self.notify_all(&to, REMINDER, plan, 0, now);
-            if let Some(p) = self.plans.iter_mut().find(|p| p.id == plan) {
+            if let Some(p) = self.plans.get_mut(plan) {
                 p.reminded = true;
             }
         }
@@ -159,7 +162,16 @@ impl State {
     /// Marks `account`'s notifications read, up to and including `up_to`
     /// (ids grow over time), or all of them when `up_to` is 0.
     pub fn mark_read(&mut self, account: u32, up_to: u32) -> bool {
-        let Some(a) = self.accounts.iter_mut().find(|a| a.id == account) else {
+        let unread = |a: &crate::messages::StoredAccount| {
+            a.notifications
+                .iter()
+                .any(|n| !n.read && (up_to == 0 || n.id <= up_to))
+        };
+        // Only an account with something to mark is touched (and saved).
+        if !self.account(account).is_some_and(unread) {
+            return false;
+        }
+        let Some(a) = self.accounts.get_mut(account) else {
             return false;
         };
         let mut changed = false;

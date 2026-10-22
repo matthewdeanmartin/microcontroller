@@ -17,11 +17,13 @@ pub mod notify;
 pub mod outbound;
 pub mod pin;
 pub mod plans;
+pub mod records;
 pub mod recurring;
 pub mod replies;
 pub mod screen;
 pub mod state;
 pub mod store;
+pub mod table;
 pub mod views;
 
 pub use api::App;

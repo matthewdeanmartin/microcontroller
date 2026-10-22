@@ -76,8 +76,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let board = esp::start(board_config, peripherals.modem)?;
 
     SIGNALS.step(8, "state partition");
-    // The snapshot slots live in their own NVS partition, apart from Wi-Fi
-    // and framework settings. Never erased by firmware.
+    // The state's records (and the schema-1 snapshot slots they were
+    // migrated from) live in their own NVS partition, apart from Wi-Fi and
+    // framework settings. Never erased by firmware.
     let kv = Arc::new(board.partition_kv("gmstate", "gm")?);
     let limits = Limits::board();
     // What a PIN check costs on this chip (the rounds target ~100 ms).

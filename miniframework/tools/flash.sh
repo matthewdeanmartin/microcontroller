@@ -1,26 +1,36 @@
 #!/usr/bin/env bash
-# Usage: bash tools/flash.sh <app-dir> <bin-name> <PORT> [--replace-nanacoin]
+# Usage: bash tools/flash.sh <app-dir> <bin-name> <PORT> --confirm-mac MAC [--replace-nanacoin]
 #
 # Flashes an ESP32-S2 Mini with an app built by tools/build-firmware.sh:
 # bootloader (0x1000), partition table (0x8000), app (0x10000).
 #
 # Before writing anything it:
 #   1. connects with --chip esp32s2 (any other chip is refused),
-#   2. prints the board's MAC, and
-#   3. reads the partition table already on the board. If it is a NanaCoin
-#      bank (it has a "ledger" partition), it stops unless
-#      --replace-nanacoin is given: flashing would end that bank (its ledger
-#      would no longer be reachable).
+#   2. requires the board's MAC to match --confirm-mac, and
+#   3. parses the existing partition table and requires the built layout.
+# Empty/unknown layouts need a separately reviewed provisioning/migration.
+# --replace-nanacoin never bypasses layout or identity checks.
 #
 # The S2 Mini has native USB only: put it in download mode first
 # (hold BOOT, tap RST, release BOOT), and tap RST again after flashing.
 set -euo pipefail
-[[ $# -ge 3 ]] || { echo 'Usage: bash tools/flash.sh <app-dir> <bin-name> <PORT> [--replace-nanacoin]' >&2; exit 2; }
+[[ $# -ge 5 ]] || { echo 'Usage: bash tools/flash.sh <app-dir> <bin-name> <PORT> --confirm-mac MAC [--replace-nanacoin]' >&2; exit 2; }
 app=$(cd "$1" && pwd)
 bin=$2
 port=$3
-replace=${4:-}
-out="${CARGO_TARGET_DIR:-C:/mfw-s2}/xtensa-esp32s2-espidf/release"
+shift 3
+confirm_mac=
+replace=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --confirm-mac) [[ $# -ge 2 && -z $confirm_mac ]] || exit 2; confirm_mac=${2,,}; shift 2 ;;
+    --replace-nanacoin) replace=(--replace-nanacoin); shift ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[[ $confirm_mac =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || { echo 'A valid --confirm-mac is required.' >&2; exit 2; }
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+out="${CARGO_TARGET_DIR:-C:/tmp/mfw-s2}/xtensa-esp32s2-espidf/release"
 python=python
 [[ -x /c/Espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe ]] && python=/c/Espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe
 esptool() { "$python" -m esptool --chip esp32s2 --port "$port" --before no_reset "$@"; }
@@ -40,7 +50,7 @@ for f in bootloader.bin partition-table.bin "$bin.bin"; do
 done
 
 echo "Connecting to $port (the S2 must be in download mode: hold BOOT, tap RST, release BOOT)..."
-probe=$(esptool --after no_reset read_mac 2>&1) || true
+probe=$(esptool --after no_reset read_mac 2>&1) || { echo "$probe" >&2; exit 1; }
 mac=$(sed -n 's/^MAC: //p' <<<"$probe" | head -1)
 [[ -n $mac ]] || {
   tail -3 <<<"$probe" >&2
@@ -48,25 +58,21 @@ mac=$(sed -n 's/^MAC: //p' <<<"$probe" | head -1)
   exit 1
 }
 echo "Board MAC: $mac"
+mac=${mac//$'\r'/}
+[[ ${mac,,} == "$confirm_mac" ]] || { echo "MAC mismatch: expected $confirm_mac; nothing was written." >&2; exit 1; }
 wait_port
 
 # Windows Python cannot open Git Bash paths like /tmp/...: pass C:/... form.
 table=$(mktemp)
-trap 'rm -f "$table"' EXIT
+trap 'rm -f "$table" "$table.log"' EXIT
 native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 esptool --after no_reset read_flash 0x8000 0xC00 "$(native "$table")" >"$table.log" 2>&1 || {
   cat "$table.log" >&2
   echo 'Could not read the partition table; nothing was written.' >&2
   exit 1
 }
-if grep -qa 'ledger' "$table"; then
-  echo "This board holds a NanaCoin bank (it has a 'ledger' partition)." >&2
-  if [[ $replace != --replace-nanacoin ]]; then
-    echo 'Refusing to overwrite it. Re-run with --replace-nanacoin if that bank should end.' >&2
-    exit 1
-  fi
-  echo 'Replacing the NanaCoin bank as requested.'
-fi
+PYTHONPATH="$(native "$script_dir/boardsafe/src")" uv run --no-project python -m boardsafe.first_install \
+  "$(native "$table")" "$(native "$out/partition-table.bin")" "${replace[@]}"
 wait_port
 
 # esptool can lose the port after the last write (the chip leaves USB); the

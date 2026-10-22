@@ -9,9 +9,9 @@ CARGO ?= cargo
 BOARD ?= s2
 HOST_s2 := housemetrics
 HOST_s2v2 := housemetrics-v2
-CONFIG_s2v2 := $(CURDIR)/$(APP)/config/scrapes-none.json
+CONFIG_s2v2 := $(CURDIR)/$(APP)/config/scrapes.json
 HOST ?= $(HOST_$(BOARD))
-export CARGO_TARGET_DIR ?= C:/mfw-$(BOARD)
+export CARGO_TARGET_DIR ?= C:/tmp/mfw-$(BOARD)
 export HOUSEMETRICS_BOARD := $(BOARD)
 export HOUSEMETRICS_HOSTNAME := $(HOST)
 ifneq ($(CONFIG_$(BOARD)),)
@@ -29,10 +29,10 @@ help:
 	  'make run-bundle  build the Angular app and serve UI + API from :8080' \
 	  '' \
 	  'Board commands take BOARD=s2 (housemetrics.local, the default) or' \
-	  'BOARD=s2v2 (housemetrics-v2.local, the test bed); see apps/housemetrics/boards.py' \
+	  'BOARD=s2v2 (original S2, reserved for repurposing); see apps/housemetrics/boards.py' \
 	  'make certs       issue <host>.local certificate from the household CA' \
 	  'make firmware    build the firmware (no flashing); TRANSPORT=http|https|http2' \
-	  'make flash PORT=COMn   FIRST INSTALL: bootloader + table + app (see apps/housemetrics/DEPLOY_S2.md)' \
+	  'make flash PORT=COMn CONFIRM_MAC=xx:xx:xx:xx:xx:xx  full-image write; known matching layout only (see DEPLOY_S2.md)' \
 	  'make image-check  is the built image this board'"'"'s? (board marker, chip, size; no board)' \
 	  'make update PORT=COMn  app-only update: checks chip, MAC, partition table first; keeps NVS' \
 	  'make probe ADDRESS=ip  strict live check: TLS, identity, every asset, /ca' \
@@ -96,7 +96,8 @@ firmware: certs web
 
 flash:
 	@[ -n "$(PORT)" ] || { echo 'Set PORT=COMn (the S2 in download mode: hold BOOT, tap RST).' >&2; exit 2; }
-	bash tools/flash.sh $(APP) housemetrics-esp32 "$(PORT)" $(ARGS)
+	@[ -n "$(CONFIRM_MAC)" ] || { echo 'Set CONFIRM_MAC to the intended physical board MAC; see DEPLOY_S2.md.' >&2; exit 2; }
+	bash tools/flash.sh $(APP) housemetrics-esp32 "$(PORT)" --confirm-mac "$(CONFIRM_MAC)" $(ARGS)
 
 BOARDSAFE := uv run --project tools/boardsafe
 REGISTRY := $(APP)/boards.py

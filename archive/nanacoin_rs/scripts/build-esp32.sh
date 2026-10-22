@@ -23,7 +23,7 @@ bash scripts/dev-certs.sh
 # Elsewhere, source your ESP-IDF and espup export scripts before this script.
 if [[ -d /c/Espressif/frameworks/esp-idf-v5.5.3 ]]; then
   # esp-idf-sys rejects long Windows output paths before running CMake.
-  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-C:/ncr}"
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-C:/tmp/ncr}"
   export IDF_PATH="C:/Espressif/frameworks/esp-idf-v5.5.3"
   export IDF_TOOLS_PATH="C:/Espressif"
   export ESP_IDF_TOOLS_INSTALL_DIR=fromenv

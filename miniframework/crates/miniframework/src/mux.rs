@@ -229,6 +229,15 @@ impl<C: Conn> Mux<C> {
         self.clients.is_empty()
     }
 
+    /// Drop idle connections during a planned restart. Keep requests,
+    /// responses and HTTP/2 streams in flight; the caller stops admission
+    /// and continues `turn` until this returns true. Allocates nothing.
+    #[cfg(feature = "ops")]
+    pub fn close_idle(&mut self) -> bool {
+        self.clients.retain(|client| !client.evictable());
+        self.is_empty()
+    }
+
     /// Whether [`Mux::add`] would admit a connection of this kind now: a free
     /// slot, or an idle keep-alive connection it would evict. Accept only
     /// then, and extra connections wait in the listen backlog rather than
@@ -721,6 +730,34 @@ mod tests {
     }
 
     const GET: &[u8] = b"GET /api/x HTTP/1.1\r\nHost: board.local\r\n\r\n";
+
+    #[cfg(feature = "ops")]
+    #[test]
+    fn planned_restart_keeps_partial_requests_and_unsent_responses() {
+        let site = site();
+        let mut mux = Mux::new(limits(), 1024, 4096);
+        let pipe = Pipe::new(false, b"GET /api/x HTTP/1.1\r\n");
+        mux.add(pipe.clone());
+        mux.turn(&site);
+        mux.clients[0].active = Instant::now() - Duration::from_secs(1);
+        assert!(!mux.close_idle());
+        mux.clients[0].active = Instant::now();
+        pipe.input
+            .lock()
+            .unwrap()
+            .extend_from_slice(b"Host: board.local\r\n\r\n");
+        *pipe.window.lock().unwrap() = Some(0);
+        mux.turn(&site);
+        mux.clients[0].active = Instant::now() - Duration::from_secs(1);
+        assert!(!mux.close_idle());
+        *pipe.window.lock().unwrap() = None;
+        for _ in 0..4 {
+            mux.turn(&site);
+        }
+        assert!(pipe.written().contains("hello"));
+        mux.clients[0].active = Instant::now() - Duration::from_secs(1);
+        assert!(mux.close_idle());
+    }
 
     #[test]
     fn answers_keep_alive_and_pipelined_requests() {

@@ -63,7 +63,9 @@ from a copy of one of them.
   Minicloud `cargo test` + `uv run --with paho-mqtt==2.1.0 python
   scripts/smoke.py`, mastomini `make test smoke client-test conformance`
   (use a separate `CARGO_TARGET_DIR` if the owner has a dev server
-  running).
+  running). Scratch and firmware target dirs live under `C:/tmp/`, never
+  directly in `C:/`; firmware names stay short (esp-idf-sys's 88-character
+  output-path limit leaves about 6 characters after `C:/tmp/` for P4).
 - **Transports are features**: none (HTTP), `tls`, `http2`. Test all three
   (`make check` does).
 - **Done means `make check` passes** (Rust tests with and without `gzip`,

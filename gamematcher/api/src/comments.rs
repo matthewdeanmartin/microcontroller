@@ -150,7 +150,7 @@ impl State {
             ));
         }
         thread.comments.remove(i);
-        if let Some(p) = self.plans.iter_mut().find(|p| p.id == plan) {
+        if let Some(p) = self.plans.get_mut(plan) {
             p.comments = thread.comments.len() as u32;
         }
         Ok(())

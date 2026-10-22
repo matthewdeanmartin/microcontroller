@@ -69,6 +69,11 @@ export interface StorageInfo {
   max_sessions: number;
   loaded_slot: number;
   fallback_used: boolean;
+  records: number;
+  last_commit_bytes: number;
+  max_commit_bytes: number;
+  quarantined: string[];
+  migrated: boolean;
 }
 
 export { ApiError };

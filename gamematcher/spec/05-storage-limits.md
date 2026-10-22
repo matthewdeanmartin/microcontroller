@@ -2,7 +2,13 @@
 
 ## Persistence model
 
-Follows minicloud's proven-on-this-board scheme (`mastomini/minicloud_rs/ARCHITECTURE.md`):
+**Superseded October 21, 2026 by [Sprint 10](sprint-10-storage.md):** the
+state is now one record per row (`api/src/records.rs`), and a commit writes
+only the records it touched. A response writes about 650 bytes whether the
+board is empty or full. The rest of this section describes schema 1, which
+is now read only to migrate.
+
+Schema 1 followed minicloud's proven-on-this-board scheme (`mastomini/minicloud_rs/ARCHITECTURE.md`):
 
 - The whole domain state is one compact binary snapshot (framework wire
   format, CBOR with integer keys, so it has a schema with versioned fields that only get appended).

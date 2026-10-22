@@ -61,7 +61,7 @@ mod tests {
                 .unwrap()
                 .targets
                 .len(),
-            4
+            3
         );
         for bad in [
             r#"{"targets":[{"name":"peer","url":"ftp://peer/metrics","every_s":30}]}"#,

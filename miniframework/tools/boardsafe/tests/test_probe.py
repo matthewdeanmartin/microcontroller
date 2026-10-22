@@ -47,6 +47,17 @@ def test_bundles_parse_with_identity_recovered(tmp_path, gzip_only):
     assert gzip.decompress(zipped) == html
 
 
+def test_gzip_bundle_with_inline_empty_identity(tmp_path):
+    folder = tmp_path / 'web'
+    html = write_bundle(folder, True)
+    manifest = folder / 'assets.rs'
+    manifest.write_text(manifest.read_text().replace(
+        f'raw: include_bytes!("{(folder / "0.raw").as_posix()}")', 'raw: b""'))
+    [(uri, identity, zipped, only)] = bundled_assets(folder)
+    assert (uri, identity, only) == ('/index.html', html, True)
+    assert gzip.decompress(zipped) == html
+
+
 def fake_board(asset, *, etag='W/"1"', drop_vary=False, truncate=False):
     """A getter that answers like a correct board, with optional faults."""
     uri, raw, zipped, gzip_only = asset

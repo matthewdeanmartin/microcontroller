@@ -1,5 +1,88 @@
 # Deploy housemetrics to the ESP32-S2 Mini
 
+## October 19, 2026: owner correction, permanent housemetrics.local identity
+
+The owner clarified that one S2 remains the collector and the other will be
+repurposed. COM4 was identified by chip MAC `80:65:99:f0:1c:9c` and its exact
+partition table. This board now owns **https://housemetrics.local**, at
+`192.168.1.157`, under registry `s2`. Registry `s2v2` now reserves the original
+`80:65:99:f0:7b:68` for repurposing; its actual firmware was not changed.
+Keep that old board offline until its duplicate collector identity is removed.
+This supersedes the earlier `housemetrics-v2.local` deployment below.
+
+Reused the existing household CA and housemetrics certificate, existing web
+bundle, Wi-Fi build settings and private ops keys. Framework `make check`
+passed. Built the `s2` marker/name using the cached `C:/tmp/mfw-s2v2` target directory
+(explicit image path used for checks/flash; ordinary future `s2` builds use
+`C:/tmp/mfw-s2`). App-only guarded update wrote 1,682,560 bytes at 0x10000;
+hash verified, NVS/bootloader/table untouched. No repartitioning or OTA work.
+
+Strict IP and hostname probes passed, including all seven UI assets, CA,
+ETags, keep-alive and slow-reader checks. Health at 86 seconds: ok, 34 KiB
+free, minimum 29 KiB, largest block 31 KiB, zero allocation failures.
+Approval-required restart remains advertised; it was not invoked.
+Homelab seeds restored to housemetrics.local; bot settings were not modified.
+
+Image SHA-256: `724c215ed808ffbc1720e76b8f4b480849fe6ba61fec09fdc8dffe24874b404f`.
+Private snapshot: `mastomini/mastomini_bots/.local/sprint2-20261019/housemetrics-primary.bin`.
+Receipt beside it: `housemetrics.receipt.json`, baseline
+`housemetrics.local=6f335bf+`. The git-based build label is unchanged by this
+configuration-only rebuild; the image hash distinguishes it. Logs under
+`miniframework/.local/housemetrics-name-{build,check,flash}.log`.
+
+## October 19, 2026: Sprint 1/2 replacement collector deployed
+
+Owner attached the metrics board in upload mode. Registry-guarded app-only
+update on COM4 verified MAC `80:65:99:f0:1c:9c` and the exact partition table,
+then wrote 1,682,592 bytes at `0x10000`; flash hash verification passed.
+Bootloader, partition table and NVS were untouched; volatile metrics reset.
+The collector is now **https://housemetrics-v2.local**, `192.168.1.157`.
+This supersedes the pending identity/registry notes below.
+
+Strict hostname/CA TLS, identity, all seven gzip-only UI assets, ETags,
+keep-alive, slow-reader checks and `/ca` passed. Fixed the local boardsafe
+asset reader to accept the bundler's inline `raw: b""`; all 34 boardsafe
+tests passed. No second flash was needed. Health after one minute: ok,
+34 KiB internal free, minimum 30 KiB, largest block 31 KiB, zero allocation
+failures, clock set. The action catalog advertises approval-required
+`restart-planned`; no action was executed. Loaded soak remains pending.
+
+Image SHA-256: `395e7dce31ad93b3f4335a3d9fb7cf589234aa9443cd831a1c230b95eacfb6b7`.
+Receipt: `mastomini/mastomini_bots/.local/sprint2-20261019/housemetrics-v2.receipt.json`;
+baseline `housemetrics-v2.local=6f335bf+`. SRE settings were not changed:
+its collector/target URLs still need the new hostname where configured.
+
+## October 19, 2026: current physical board and pending safety fix
+
+The deployed collector is now `192.168.1.157`, `housemetrics.local`, on
+`80:65:99:f0:1c:9c` (the retired NanaCoin S2 test bank). The original collector
+`80:65:99:f0:7b:68` is offline. The October 19 deployment used the primary
+housemetrics hostname/config on the replacement board; the `s2v2` registry
+profile still describes its earlier test-bed role. Neither registry entry
+currently describes both the deployed identity and physical MAC: do not use
+them for an update until the replacement's permanent role is decided.
+Keep the original collector offline to avoid duplicate `housemetrics.local`.
+
+Sprint 1 now prepares `BOARD=s2v2` as the replacement collector: unique
+`housemetrics-v2.local` hostname/certificate, correct `…:1c:9c` MAC, and the
+household scrape list (not the old empty test-bed list). This is **not yet
+deployed**. Build with `make BOARD=s2v2 firmware`; after the required operator
+approval, use the registry-checked app-only update. Then change the SRE
+target to `https://housemetrics-v2.local`, verify its strict TLS probe, and
+update homelab's live seed list. Do not relabel the primary `s2` MAC.
+
+The old flash guard failed to recognize the bank before that deployment.
+The local fix now requires `make flash PORT=COMn CONFIRM_MAC=<physical-MAC>`
+and a valid existing table matching the built layout. Empty or unknown
+tables are refused, including with `ARGS=--replace-nanacoin`; provisioning
+or a layout migration needs a separate reviewed procedure. Prefer app-only
+`make update` once the registry accurately matches the deployed board.
+
+No board was flashed or reset while making this fix. Removing the retired
+`minicloud.local` managed scrape is also a local change awaiting deployment.
+Do not add replacement scrape targets yet: live `/api/v1/series` reports
+64/64 series allocated. Review the S2 series/rollup memory budget first.
+
 ## October 3 observability update (deployed)
 
 The live collector at `192.168.1.159` already held both its own health and
@@ -74,7 +157,7 @@ the record of what happened on each deployment. Modeled on NanaCoin's
 | Flash layout | NVS 24 KiB at `0x9000`, phy 4 KiB, factory app 3.88 MiB at `0x10000`, core dump 64 KiB at `0x3F0000` (`partitions.csv`) |
 | Console | UART0 (GPIO 43/44). The app does not use USB: Windows sees nothing while it runs. The log is served at `/api/v1/log.txt` |
 | Build profile | `sdkconfig.defaults`, `Profile::s2()`, `Limits::small_board()` |
-| Cargo target dir | `C:/mfw-s2` |
+| Cargo target dir | `C:/tmp/mfw-s2` |
 | Certificate | `certs/housemetrics.crt` for `housemetrics.local`, `localhost`, `127.0.0.1`; signed by mastomini's household CA (key unchanged; certificate reissued October 17, 2026 with non-critical name constraints, now SHA-256 `5F:27:30:C7:…:D3:B7`, see mastomini `docs/security/https.md`; originally SHA-256 `C2:8F:EE:1E:…:54:FD`); valid to 2028-12-30 |
 | Data | metrics in RAM only (gone on every reset); device tokens and scrape targets in NVS namespace `hm` |
 
@@ -130,7 +213,7 @@ MINIFRAMEWORK_ENV=C:/github/mastomini/mastomini_rs/.env make firmware
 ```
 
 Builds the Angular app, bundles it (gzip only), and the firmware. Output:
-`C:/mfw-s2/xtensa-esp32s2-espidf/release/housemetrics-esp32.bin` plus
+`C:/tmp/mfw-s2/xtensa-esp32s2-espidf/release/housemetrics-esp32.bin` plus
 `bootloader.bin` and `partition-table.bin`. The script refuses an image
 larger than the app partition. A first build (or an `sdkconfig.defaults`
 change) rebuilds ESP-IDF: several minutes. No board is touched.

@@ -4,6 +4,7 @@ use gamematcher::pin::GuardLimits;
 use gamematcher::{App, Limits};
 use miniframework::kv::{Kv, MemKv};
 use miniframework::{Reply, Request, Service};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 const ORIGIN: &str = "http://gamematcher.local";
@@ -439,38 +440,237 @@ fn state_survives_reopen() {
     let users = call(&app, "GET", "/api/v1/admin/users", Some(&cookie), "");
     assert!(users.body.contains("kid@home"));
     let storage = call(&app, "GET", "/api/v1/admin/storage", Some(&cookie), "");
-    assert_eq!(storage.json("fallback_used"), "false");
+    assert!(
+        storage.body.contains(r#""quarantined":[]"#),
+        "{}",
+        storage.body
+    );
+}
+
+/// Counts what reaches flash, and can "lose power": once `budget` writes
+/// have landed, every later write fails and changes nothing.
+#[derive(Default)]
+struct FlakyKv {
+    inner: MemKv,
+    written: AtomicUsize,
+    /// Writes left before the power goes; negative = unlimited.
+    budget: AtomicI64,
+}
+
+impl FlakyKv {
+    fn new() -> Arc<Self> {
+        let kv = Self::default();
+        kv.budget.store(-1, Ordering::SeqCst);
+        Arc::new(kv)
+    }
+
+    fn spend(&self) -> std::io::Result<()> {
+        let left = self.budget.load(Ordering::SeqCst);
+        if left == 0 {
+            return Err(std::io::Error::other("power cut"));
+        }
+        if left > 0 {
+            self.budget.store(left - 1, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    /// Bytes written while running `f`.
+    fn cost(&self, f: impl FnOnce()) -> usize {
+        let before = self.written.load(Ordering::SeqCst);
+        f();
+        self.written.load(Ordering::SeqCst) - before
+    }
+}
+
+impl Kv for FlakyKv {
+    fn get(&self, key: &str) -> Option<Vec<u8>> {
+        self.inner.get(key)
+    }
+    fn set(&self, key: &str, value: &[u8]) -> std::io::Result<()> {
+        self.spend()?;
+        self.written.fetch_add(value.len(), Ordering::SeqCst);
+        self.inner.set(key, value)
+    }
+    fn remove(&self, key: &str) -> std::io::Result<()> {
+        self.spend()?;
+        self.inner.remove(key)
+    }
+}
+
+/// The Sprint 10 bug: every write used to re-encode and rewrite the whole
+/// state, so a response cost more the more the board held. Now a write
+/// costs the records it touches, whatever else is on the board.
+#[test]
+fn write_cost_does_not_grow_with_the_board() {
+    // One household action of each kind, on a board with filler.
+    let measure = |extra_accounts: usize, extra_games: usize, extra_plans: usize| {
+        let kv = FlakyKv::new();
+        let app = App::open(kv.clone(), limits()).unwrap();
+        let dad = setup(&app);
+        let kid = signup(&app, "kid@home", "Sam");
+        let catan = add_game(&app, &dad, "Catan");
+        for i in 0..extra_accounts {
+            signup(&app, &format!("guest{i}@home"), &format!("Guest {i}"));
+        }
+        for i in 0..extra_games {
+            add_game(&app, &kid, &format!("Filler {i}"));
+        }
+        for _ in 0..extra_plans {
+            new_plan(&app, &kid, catan);
+        }
+        let plan = new_plan(&app, &dad, catan);
+        let answer = r#"{"overall":"in","times":[],"games":[],"note":""}"#;
+        let respond = kv.cost(|| {
+            let path = format!("/api/v1/plans/{plan}/response");
+            let r = call(&app, "PUT", &path, Some(&kid), answer);
+            assert_eq!(r.status, 200, "{}", r.body);
+        });
+        let star = kv.cost(|| {
+            let path = format!("/api/v1/games/{catan}/interest");
+            let r = call(&app, "PUT", &path, Some(&kid), "");
+            assert_eq!(r.status, 200, "{}", r.body);
+        });
+        let sign_in = kv.cost(|| {
+            let body = r#"{"email":"kid@home","pin":"0000"}"#;
+            let r = call(&app, "POST", "/api/v1/auth/pin", None, body);
+            assert_eq!(r.status, 200, "{}", r.body);
+        });
+        (respond, star, sign_in)
+    };
+    let small = measure(0, 0, 0);
+    // A full board: 32 accounts, 256 games, 16 open plans.
+    let full = measure(30, 255, 15);
+    for (what, s, f) in [
+        ("response", small.0, full.0),
+        ("star", small.1, full.1),
+        ("sign-in", small.2, full.2),
+    ] {
+        assert!(
+            f <= s + 128,
+            "{what}: {s} bytes on a small board, {f} on a full one"
+        );
+        assert!(f < 4096, "{what} wrote {f} bytes");
+    }
+}
+
+/// A power cut at any point of a commit leaves the board as it was before
+/// the change or after it, never in between.
+#[test]
+fn power_cut_at_every_write_is_all_or_nothing() {
+    let answer = r#"{"overall":"in","times":[],"games":[],"note":""}"#;
+    let mut cut = 0;
+    loop {
+        let kv = FlakyKv::new();
+        let (dad, kid, plan) = {
+            let app = App::open(kv.clone(), limits()).unwrap();
+            let dad = setup(&app);
+            let kid = signup(&app, "kid@home", "Sam");
+            let catan = add_game(&app, &dad, "Catan");
+            let plan = new_plan(&app, &dad, catan);
+            // The response touches the plan, dad's notifications and the
+            // counters: a journaled commit. Lose power after `cut` writes.
+            kv.budget.store(cut, Ordering::SeqCst);
+            let path = format!("/api/v1/plans/{plan}/response");
+            call(&app, "PUT", &path, Some(&kid), answer);
+            (dad, kid, plan)
+        };
+        let finished = kv.budget.load(Ordering::SeqCst) != 0;
+        kv.budget.store(-1, Ordering::SeqCst);
+        let app = App::open(kv.clone(), limits()).unwrap();
+        let view = call(
+            &app,
+            "GET",
+            &format!("/api/v1/plans/{plan}"),
+            Some(&dad),
+            "",
+        );
+        assert_eq!(view.status, 200, "{}", view.body);
+        let answered = view.body.contains("Sam");
+        let unread = call(&app, "GET", "/api/v1/me/summary", Some(&dad), "").json("unread");
+        assert_eq!(
+            answered,
+            unread != "0",
+            "cut after {cut} writes: the answer and dad's notification disagree"
+        );
+        assert_eq!(call(&app, "GET", "/api/v1/me", Some(&kid), "").status, 200);
+        if finished {
+            assert!(answered, "with power the whole way, the answer is kept");
+            break;
+        }
+        cut += 1;
+        assert!(cut < 50, "the commit never finished");
+    }
 }
 
 #[test]
-fn torn_write_recovers_previous_generation() {
+fn schema_one_snapshot_is_migrated_and_kept() {
+    use gamematcher::messages::{StoredAccount, StoredState};
+    use gamematcher::store::SlotStore;
+    use miniframework::wire::{self, Format};
+    let kv: Arc<dyn Kv> = Arc::new(MemKv::default());
+    let old = StoredState {
+        schema: 1,
+        next_account: 2,
+        accounts: vec![StoredAccount {
+            id: 1,
+            email: "dad@home".into(),
+            display_name: "Dad".into(),
+            pin: gamematcher::pin::hash("1234", 2).unwrap(),
+            admin: true,
+            ..Default::default()
+        }],
+        signup_closed: true,
+        commits: 41,
+        ..Default::default()
+    };
+    let (mut slots, _) = SlotStore::open(kv.clone(), 1).unwrap();
+    slots
+        .commit(1, &wire::to_vec(Format::CborInt, &old).unwrap())
+        .unwrap();
+    let snapshot = kv.get("snap0");
+
+    let app = App::open(kv.clone(), limits()).unwrap();
+    let body = r#"{"email":"dad@home","pin":"1234"}"#;
+    let r = call(&app, "POST", "/api/v1/auth/pin", None, body);
+    assert_eq!(r.status, 200, "the old PIN works: {}", r.body);
+    let dad = r.cookie.unwrap();
+    let storage = call(&app, "GET", "/api/v1/admin/storage", Some(&dad), "");
+    assert_eq!(storage.json("migrated"), "true");
+    assert_eq!(
+        call(&app, "GET", "/api/v1/status", None, "").json("signup_open"),
+        "false"
+    );
+    assert_eq!(
+        kv.get("snap0"),
+        snapshot,
+        "the old slots stay for a rollback"
+    );
+
+    // The next boot reads records, not the snapshot.
+    drop(app);
+    let app = App::open(kv.clone(), limits()).unwrap();
+    let storage = call(&app, "GET", "/api/v1/admin/storage", Some(&dad), "");
+    assert_eq!(storage.json("migrated"), "false");
+    assert_eq!(call(&app, "GET", "/api/v1/me", Some(&dad), "").status, 200);
+}
+
+#[test]
+fn a_damaged_record_is_quarantined_not_fatal() {
     let kv: Arc<dyn Kv> = Arc::new(MemKv::default());
     let dad = {
         let app = App::open(kv.clone(), limits()).unwrap();
         let dad = setup(&app);
-        signup(&app, "kid@home", "Sam");
+        add_game(&app, &dad, "Catan");
+        add_game(&app, &dad, "Wingspan");
         dad
     };
-    // Tear the newest slot (whichever has the higher generation).
-    let generation = |k: &str| {
-        kv.get(k)
-            .map(|b| u64::from_le_bytes(b[8..16].try_into().unwrap()))
-    };
-    let newest = if generation("snap0") > generation("snap1") {
-        "snap0"
-    } else {
-        "snap1"
-    };
-    let mut bytes = kv.get(newest).unwrap();
-    bytes.truncate(bytes.len() / 2);
-    kv.set(newest, &bytes).unwrap();
+    kv.set("g1", b"\xff not cbor").unwrap();
     let app = App::open(kv, limits()).unwrap();
     let storage = call(&app, "GET", "/api/v1/admin/storage", Some(&dad), "");
-    assert_eq!(storage.status, 200, "{}", storage.body);
-    assert_eq!(storage.json("fallback_used"), "true");
-    // The kid's sign-up was the lost change.
-    let users = call(&app, "GET", "/api/v1/admin/users", Some(&dad), "");
-    assert!(!users.body.contains("kid@home"));
+    assert!(storage.body.contains("g1:"), "{}", storage.body);
+    let games = call(&app, "GET", "/api/v1/games", Some(&dad), "");
+    assert!(games.body.contains("Wingspan") && !games.body.contains("Catan"));
 }
 
 #[test]
@@ -478,7 +678,10 @@ fn unreadable_state_refuses_to_start() {
     let kv: Arc<dyn Kv> = Arc::new(MemKv::default());
     kv.set("snap0", b"garbage").unwrap();
     kv.set("snap1", b"more garbage").unwrap();
-    assert!(App::open(kv, limits()).is_err());
+    assert!(App::open(kv, limits()).is_err(), "nothing to migrate from");
+    let kv: Arc<dyn Kv> = Arc::new(MemKv::default());
+    kv.set("meta", b"\xff garbage").unwrap();
+    assert!(App::open(kv, limits()).is_err(), "meta unreadable");
 }
 
 // ---- Sprint 2: games ---------------------------------------------------------

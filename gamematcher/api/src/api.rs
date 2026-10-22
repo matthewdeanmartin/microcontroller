@@ -4,7 +4,8 @@
 //! Auth is the `gm_session` cookie. Every non-GET request must come from
 //! the board's own pages (`require_same_origin`). Every change is committed
 //! to flash before the response is sent; if the commit fails the change is
-//! rolled back and the client gets 500.
+//! rolled back and the client gets 500. A commit writes only the records the
+//! change touched (`records.rs`).
 use crate::announce::{self, News};
 use crate::comments;
 use crate::ics;
@@ -13,9 +14,9 @@ use crate::mail;
 use crate::messages::*;
 use crate::outbound::{self, MailSetup as MailConfig, Outbox};
 use crate::pin::{self, Guard, GuardLimits};
+use crate::records::RecordStore;
 use crate::screen::{self, cards::Context, BmpStream, Frame};
-use crate::state::{self, Limits, State, SCHEMA};
-use crate::store::SlotStore;
+use crate::state::{self, Limits, State};
 use crate::views;
 use miniframework::kv::Kv;
 use miniframework::oauth::{OAuth, Poll};
@@ -36,11 +37,12 @@ fn wall() -> Option<u64> {
 
 struct Inner {
     state: State,
-    store: SlotStore,
+    records: RecordStore,
     guard: Guard,
-    loaded_slot: u32,
-    fallback: bool,
-    snapshot_bytes: u32,
+    /// Records that failed to load at boot (left on flash).
+    quarantined: Vec<String>,
+    /// This boot converted the schema-1 snapshot.
+    migrated: bool,
     /// Monotonic ms of the last flush of touch-only changes.
     last_flush: u64,
 }
@@ -95,8 +97,9 @@ struct Caller {
 }
 
 impl App {
-    /// Loads the newest snapshot from `kv`. Refuses (rather than starting
-    /// empty) when both slots are unreadable.
+    /// Loads the state's records from `kv` (migrating the schema-1 snapshot
+    /// on first boot). Refuses, rather than starting empty, when `meta` is
+    /// unreadable.
     pub fn open(kv: Arc<dyn Kv>, limits: Limits) -> Result<Self, Box<dyn std::error::Error>> {
         Self::open_with(kv, limits, GuardLimits::default())
     }
@@ -106,28 +109,14 @@ impl App {
         limits: Limits,
         guard: GuardLimits,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let (store, loaded) = SlotStore::open(kv.clone(), SCHEMA)?;
-        let (state, loaded_slot, fallback, bytes) = match loaded {
-            None => (State::new(limits), 0, false, 0),
-            Some(l) => {
-                let stored: StoredState = wire::decode(Format::CborInt, &l.payload)
-                    .map_err(|e| format!("state snapshot: {e}"))?;
-                (
-                    State::from_stored(stored, limits),
-                    l.slot as u32,
-                    l.fallback,
-                    l.payload.len() as u32,
-                )
-            }
-        };
+        let opened = RecordStore::open(kv.clone(), limits)?;
         Ok(Self {
             inner: Mutex::new(Inner {
-                state,
-                store,
+                state: opened.state,
+                records: opened.store,
                 guard: Guard::new(guard),
-                loaded_slot,
-                fallback,
-                snapshot_bytes: bytes,
+                quarantined: opened.quarantined,
+                migrated: opened.migrated,
                 last_flush: 0,
             }),
             dev_origins: Vec::new(),
@@ -286,33 +275,29 @@ Reply in, maybe or out to this post, or mention me with: in {}
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Writes the state as the next generation.
+    /// Writes the records that changed since the last commit.
     fn commit(inner: &mut Inner) -> Result<(), ApiError> {
-        inner.state.commits += 1;
-        let bytes =
-            wire::to_vec(Format::CborInt, &inner.state.to_stored()).map_err(ApiError::from)?;
-        if let Err(e) = inner.store.commit(SCHEMA, &bytes) {
-            inner.state.commits -= 1;
+        let failed = |e: std::io::Error| {
             log::error!("state commit failed: {e}");
-            return Err(ApiError::new(
-                500,
-                "storage_failed",
-                "Could not save; nothing changed",
-            ));
+            ApiError::new(500, "storage_failed", "Could not save; nothing changed")
+        };
+        let changes = inner.records.changes(&inner.state).map_err(failed)?;
+        if changes.writes.is_empty() {
+            return Ok(());
         }
-        inner.snapshot_bytes = bytes.len() as u32;
-        inner.state.sessions.saved();
+        inner.records.write(changes).map_err(failed)?;
+        inner.state.commits += 1;
+        inner.state.saved();
         Ok(())
     }
 
     /// Runs `f` on the state and commits; any error leaves the state as it was.
     fn mutate<R>(&self, f: impl FnOnce(&mut Inner) -> Result<R, ApiError>) -> Result<R, ApiError> {
         let mut inner = self.lock();
-        let backup = inner.state.to_stored();
+        let sp = inner.state.savepoint();
         let result = f(&mut inner).and_then(|r| Self::commit(&mut inner).map(|_| r));
         if result.is_err() {
-            let limits = inner.state.limits.clone();
-            inner.state = State::from_stored(backup, limits);
+            inner.state.rollback(sp);
         }
         self.drop_threads(&mut inner);
         self.flush_mail(&mut inner);
@@ -325,7 +310,7 @@ Reply in, maybe or out to this post, or mention me with: in {}
         f: impl FnOnce(&mut Inner) -> Result<Option<R>, ApiError>,
     ) -> Result<Option<R>, ApiError> {
         let mut inner = self.lock();
-        let backup = inner.state.to_stored();
+        let sp = inner.state.savepoint();
         let result = f(&mut inner).and_then(|r| {
             if r.is_some() {
                 Self::commit(&mut inner)?;
@@ -333,7 +318,7 @@ Reply in, maybe or out to this post, or mention me with: in {}
             Ok(r)
         });
         if result.is_err() {
-            inner.state = State::from_stored(backup, inner.state.limits.clone());
+            inner.state.rollback(sp);
         }
         self.drop_threads(&mut inner);
         self.flush_mail(&mut inner);
@@ -616,6 +601,8 @@ Reply in, maybe or out to this post, or mention me with: in {}
             let done = inner.state.advance_plans(w);
             inner.state.send_reminders(w) || done
         });
+        let commits = inner.state.commits;
+        inner.records.save_commits(commits);
         if !plans_moved && !inner.state.sessions.dirty() {
             return;
         }
@@ -1175,15 +1162,20 @@ Reply in, maybe or out to this post, or mention me with: in {}
                 reply.wire(
                     req,
                     &StorageInfo {
-                        generation: inner.store.generation,
-                        snapshot_bytes: inner.snapshot_bytes,
+                        generation: inner.state.commits,
+                        snapshot_bytes: 0,
                         commits: inner.state.commits,
                         accounts: inner.state.accounts.len() as u32,
                         max_accounts: inner.state.limits.accounts as u32,
                         sessions: inner.state.sessions.records().len() as u32,
                         max_sessions: inner.state.limits.sessions as u32,
-                        loaded_slot: inner.loaded_slot,
-                        fallback_used: inner.fallback,
+                        loaded_slot: 0,
+                        fallback_used: false,
+                        records: inner.records.records(),
+                        last_commit_bytes: inner.records.last_commit_bytes,
+                        max_commit_bytes: inner.records.max_commit_bytes,
+                        quarantined: inner.quarantined.clone(),
+                        migrated: inner.migrated,
                     },
                 );
             }
@@ -1852,7 +1844,11 @@ impl Service for App {
             ("gm_accounts", inner.state.accounts.len() as f64),
             ("gm_sessions", inner.state.sessions.records().len() as f64),
             ("gm_commits", inner.state.commits as f64),
-            ("gm_snapshot_bytes", inner.snapshot_bytes as f64),
+            (
+                "gm_last_commit_bytes",
+                inner.records.last_commit_bytes as f64,
+            ),
+            ("gm_max_commit_bytes", inner.records.max_commit_bytes as f64),
             ("gm_games", inner.state.games.len() as f64),
             ("gm_plans", inner.state.plans.len() as f64),
             ("gm_comments", inner.state.comment_total() as f64),
@@ -1862,17 +1858,18 @@ impl Service for App {
     fn checks(&self) -> Vec<Check> {
         let inner = self.lock();
         let limits = &inner.state.limits;
-        let slot = if inner.fallback {
+        let slot = if inner.quarantined.is_empty() {
+            Check::new("store.records", CheckStatus::Ok, "Every record loaded")
+        } else {
             Check::new(
-                "store.slot",
+                "store.records",
                 CheckStatus::Warn,
                 format!(
-                    "Booted from slot {}: the other snapshot was invalid",
-                    inner.loaded_slot
+                    "{} record(s) failed to load: {}",
+                    inner.quarantined.len(),
+                    inner.quarantined.join("; ")
                 ),
             )
-        } else {
-            Check::new("store.slot", CheckStatus::Ok, "Newest snapshot loaded")
         };
         vec![
             slot.runbook("storage"),

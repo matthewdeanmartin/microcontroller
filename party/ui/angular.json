@@ -1,0 +1,94 @@
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "cli": { "packageManager": "npm", "analytics": false },
+  "newProjectRoot": "projects",
+  "projects": {
+    "local": {
+      "projectType": "application",
+      "root": "projects/local",
+      "sourceRoot": "projects/local/src",
+      "prefix": "party",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "outputPath": "dist/local",
+            "browser": "projects/local/src/main.ts",
+            "tsConfig": "projects/local/tsconfig.app.json",
+            "assets": [{ "glob": "**/*", "input": "projects/local/public" }],
+            "styles": ["projects/local/src/styles.css"]
+          },
+          "configurations": {
+            "production": {
+              "budgets": [
+                { "type": "initial", "maximumWarning": "300kB", "maximumError": "450kB" },
+                { "type": "anyComponentStyle", "maximumWarning": "4kB", "maximumError": "8kB" }
+              ],
+              "outputHashing": "all"
+            },
+            "development": { "optimization": false, "extractLicenses": false, "sourceMap": true }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "configurations": {
+            "production": { "buildTarget": "local:build:production" },
+            "development": { "buildTarget": "local:build:development" }
+          },
+          "defaultConfiguration": "development",
+          "options": { "proxyConfig": "proxy.conf.mjs" }
+        }
+      }
+    },
+    "companion": {
+      "projectType": "application",
+      "root": "projects/companion",
+      "sourceRoot": "projects/companion/src",
+      "prefix": "party",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "outputPath": "dist/companion",
+            "browser": "projects/companion/src/main.ts",
+            "tsConfig": "projects/companion/tsconfig.app.json",
+            "assets": [{ "glob": "**/*", "input": "projects/companion/public" }],
+            "styles": ["projects/local/src/styles.css"]
+          },
+          "configurations": {
+            "production": {
+              "budgets": [
+                { "type": "initial", "maximumWarning": "300kB", "maximumError": "450kB" },
+                { "type": "anyComponentStyle", "maximumWarning": "4kB", "maximumError": "8kB" }
+              ],
+              "optimization": { "scripts": true, "styles": { "minify": true, "inlineCritical": false } },
+              "outputHashing": "all"
+            },
+            "demo": {
+              "outputPath": "dist/demo",
+              "optimization": { "scripts": true, "styles": { "minify": true, "inlineCritical": false } },
+              "outputHashing": "all",
+              "fileReplacements": [
+                { "replace": "projects/companion/src/app/mode.ts", "with": "projects/companion/src/app/mode.demo.ts" }
+              ]
+            },
+            "development": { "optimization": false, "extractLicenses": false, "sourceMap": true }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "configurations": {
+            "production": { "buildTarget": "companion:build:production" },
+            "demo": { "buildTarget": "companion:build:demo" },
+            "development": { "buildTarget": "companion:build:development" }
+          },
+          "defaultConfiguration": "development",
+          "options": { "port": 4201 }
+        }
+      }
+    }
+  }
+}

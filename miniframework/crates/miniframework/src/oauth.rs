@@ -83,6 +83,9 @@ pub struct Config {
     /// Most sign-ins in flight at once.
     pub capacity: usize,
     pub expiry: Duration,
+    /// Scopes beyond reading the account (e.g. `write:statuses`), registered
+    /// with every instance but asked for only by [`OAuth::start_keeping_token`].
+    pub extra_scopes: &'static str,
 }
 
 impl Default for Config {
@@ -94,6 +97,7 @@ impl Default for Config {
             cookie: "mf_oauth",
             capacity: 8,
             expiry: Duration::from_secs(600),
+            extra_scopes: "",
         }
     }
 }
@@ -164,6 +168,8 @@ struct Flight {
     origin: String,
     intent: String,
     verifier: String,
+    /// Ask for the extra scopes and keep the token ([`OAuth::take_token`]).
+    keep: bool,
     phase: Phase,
     started: Instant,
 }
@@ -181,6 +187,8 @@ pub struct OAuth {
     providers: Mutex<Vec<Provider>>,
     flights: Mutex<Vec<Flight>>,
     jobs: Mutex<VecDeque<Job>>,
+    /// Tokens kept for the app: (provider, subject, token), until taken.
+    kept: Mutex<Vec<(String, String, String)>>,
 }
 
 const LIMIT: usize = 32 * 1024;
@@ -274,6 +282,7 @@ impl OAuth {
             providers: Mutex::new(Vec::new()),
             flights: Mutex::new(Vec::new()),
             jobs: Mutex::new(VecDeque::new()),
+            kept: Mutex::new(Vec::new()),
         }
     }
 
@@ -296,6 +305,73 @@ impl OAuth {
     /// (`http://gamematcher.local`, as the browser sees the app). `intent`
     /// comes back with the identity (e.g. "login" or "link:7").
     pub fn start(&self, provider: &str, origin: &str, intent: String) -> Result<String, ApiError> {
+        self.begin(provider, origin, intent, false)
+    }
+
+    /// Like [`OAuth::start`], but asks for [`Config::extra_scopes`] too and
+    /// keeps the access token instead of revoking it: collect it with
+    /// [`OAuth::take_token`] once the sign-in is done. Keeping it safe is the
+    /// app's job (flash isn't encrypted).
+    pub fn start_keeping_token(
+        &self,
+        provider: &str,
+        origin: &str,
+        intent: String,
+    ) -> Result<String, ApiError> {
+        self.begin(provider, origin, intent, true)
+    }
+
+    /// The token a [`OAuth::start_keeping_token`] sign-in kept for
+    /// `identity`; handed out once.
+    pub fn take_token(&self, identity: &Identity) -> Option<String> {
+        let mut kept = self.kept.lock().unwrap();
+        let i = kept
+            .iter()
+            .position(|(p, s, _)| *p == identity.provider && *s == identity.subject)?;
+        Some(kept.remove(i).2)
+    }
+
+    /// Revokes a kept token (unlinking). Blocks for the HTTP request: call
+    /// it from a worker.
+    pub fn revoke(&self, provider: &str, token: &str) -> std::io::Result<()> {
+        let provider = self
+            .providers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| p.id == provider)
+            .cloned()
+            .ok_or_else(|| fail(format!("no provider {provider}")))?;
+        let r: Registration = self
+            .kv
+            .get(&registration_key(&provider.base))
+            .and_then(|bytes| wire::decode(Format::CborInt, &bytes).ok())
+            .ok_or_else(|| fail("not registered with that instance"))?;
+        let body = form(&[
+            ("client_id", &r.client_id),
+            ("client_secret", &r.client_secret),
+            ("token", token),
+        ]);
+        let reply = self.fetch(provider.trust).send(&Outgoing {
+            method: "POST",
+            url: &r.revoke_url,
+            headers: &[("Content-Type", "application/x-www-form-urlencoded")],
+            body: body.as_bytes(),
+            limit: 4096,
+        })?;
+        if reply.status != 200 {
+            return Err(fail(format!("revoking: HTTP {}", reply.status)));
+        }
+        Ok(())
+    }
+
+    fn begin(
+        &self,
+        provider: &str,
+        origin: &str,
+        intent: String,
+        keep: bool,
+    ) -> Result<String, ApiError> {
         let provider = self
             .providers
             .lock()
@@ -325,6 +401,7 @@ impl OAuth {
             origin: origin.trim_end_matches('/').to_string(),
             intent,
             verifier: base64url(&raw),
+            keep,
             phase: Phase::Starting,
             started: Instant::now(),
         });
@@ -420,7 +497,7 @@ impl OAuth {
         let ticket = match &job {
             Job::Start(t) | Job::Exchange(t) => t.clone(),
         };
-        let Some((provider, origin, verifier, code)) = ({
+        let Some((provider, origin, verifier, code, keep)) = ({
             let flights = self.flights.lock().unwrap();
             flights.iter().find(|f| f.ticket == ticket).map(|f| {
                 let code = match &f.phase {
@@ -432,6 +509,7 @@ impl OAuth {
                     f.origin.clone(),
                     f.verifier.clone(),
                     code,
+                    f.keep,
                 )
             })
         }) else {
@@ -439,10 +517,16 @@ impl OAuth {
         };
         let outcome = match job {
             Job::Start(_) => self
-                .authorize_url(&provider, &origin, &ticket, &verifier)
+                .authorize_url(&provider, &origin, &ticket, &verifier, keep)
                 .map(Phase::Redirect),
             Job::Exchange(_) => self
-                .exchange(&provider, &origin, &verifier, code.as_deref().unwrap_or(""))
+                .exchange(
+                    &provider,
+                    &origin,
+                    &verifier,
+                    code.as_deref().unwrap_or(""),
+                    keep,
+                )
                 .map(Phase::Done),
         };
         let phase = outcome.unwrap_or_else(|e| {
@@ -470,8 +554,10 @@ impl OAuth {
             .kv
             .get(&key)
             .and_then(|bytes| wire::decode(Format::CborInt, &bytes).ok());
+        let extra: Vec<&str> = self.config.extra_scopes.split_whitespace().collect();
         if let Some(r) = &stored {
-            if r.redirect_uris.contains(&redirect) {
+            let scopes: Vec<&str> = r.scope.split_whitespace().collect();
+            if r.redirect_uris.contains(&redirect) && extra.iter().all(|e| scopes.contains(e)) {
                 return Ok(r.clone());
             }
         }
@@ -482,7 +568,7 @@ impl OAuth {
             .ok()
             .filter(|r| r.status == 200)
             .and_then(|r| wire::decode::<Discovery>(Format::Json, &r.body).ok());
-        let (authorize_url, token_url, revoke_url, scope) = match discovered {
+        let (authorize_url, token_url, revoke_url, base_scope) = match discovered {
             Some(d) => {
                 let scope = if d.scopes_supported.iter().any(|s| s == "profile") {
                     "profile"
@@ -504,8 +590,14 @@ impl OAuth {
                 "read:accounts".to_string(),
             ),
         };
+        let scope = std::iter::once(base_scope.as_str())
+            .chain(extra.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ");
         let mut redirect_uris = stored.map(|r| r.redirect_uris).unwrap_or_default();
-        redirect_uris.push(redirect);
+        if !redirect_uris.contains(&redirect) {
+            redirect_uris.push(redirect);
+        }
         redirect_uris.truncate(8);
         let body = form(&[
             ("client_name", self.config.app_name),
@@ -549,8 +641,20 @@ impl OAuth {
         origin: &str,
         state: &str,
         verifier: &str,
+        keep: bool,
     ) -> std::io::Result<String> {
         let r = self.registration(provider, origin)?;
+        // A plain sign-in asks only to read the account.
+        let extra: Vec<&str> = self.config.extra_scopes.split_whitespace().collect();
+        let scope = if keep {
+            r.scope.clone()
+        } else {
+            r.scope
+                .split_whitespace()
+                .filter(|s| !extra.contains(s))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
         let separator = if r.authorize_url.contains('?') {
             '&'
         } else {
@@ -561,7 +665,7 @@ impl OAuth {
             r.authorize_url,
             percent_encode(&r.client_id),
             percent_encode(&self.redirect_uri(origin)),
-            percent_encode(&r.scope),
+            percent_encode(&scope),
             percent_encode(state),
             challenge(verifier),
         ))
@@ -573,6 +677,7 @@ impl OAuth {
         origin: &str,
         verifier: &str,
         code: &str,
+        keep: bool,
     ) -> std::io::Result<Identity> {
         let r = self.registration(provider, origin)?;
         let fetch = self.fetch(provider.trust);
@@ -611,21 +716,6 @@ impl OAuth {
             body: &[],
             limit: LIMIT,
         });
-        // The token was only for this one question: give it back either way.
-        let revoke = form(&[
-            ("client_id", &r.client_id),
-            ("client_secret", &r.client_secret),
-            ("token", &token.access_token),
-        ]);
-        if let Err(e) = fetch.send(&Outgoing {
-            method: "POST",
-            url: &r.revoke_url,
-            headers: &[("Content-Type", "application/x-www-form-urlencoded")],
-            body: revoke.as_bytes(),
-            limit: 4096,
-        }) {
-            log::info!("revoking the sign-in token at {}: {e}", provider.base);
-        }
         let me = me?;
         if me.status != 200 {
             return Err(fail(format!("reading the account: HTTP {}", me.status)));
@@ -634,6 +724,20 @@ impl OAuth {
             wire::decode(Format::Json, &me.body).map_err(|e| fail(format!("account: {e}")))?;
         if account.id.is_empty() {
             return Err(fail("the instance sent no account id"));
+        }
+        if keep {
+            let mut kept = self.kept.lock().unwrap();
+            kept.retain(|(p, s, _)| !(*p == provider.id && *s == account.id));
+            if kept.len() >= self.config.capacity {
+                kept.remove(0);
+            }
+            kept.push((
+                provider.id.clone(),
+                account.id.clone(),
+                token.access_token.clone(),
+            ));
+        } else {
+            self.give_back(fetch, &r, &provider.base, &token.access_token);
         }
         let host = host_of(&provider.base).to_string();
         Ok(Identity {
@@ -644,6 +748,24 @@ impl OAuth {
             display_name: account.display_name,
             avatar: account.avatar,
         })
+    }
+
+    /// The token was only for one question: give it back.
+    fn give_back(&self, fetch: &dyn Fetch, r: &Registration, base: &str, token: &str) {
+        let revoke = form(&[
+            ("client_id", &r.client_id),
+            ("client_secret", &r.client_secret),
+            ("token", token),
+        ]);
+        if let Err(e) = fetch.send(&Outgoing {
+            method: "POST",
+            url: &r.revoke_url,
+            headers: &[("Content-Type", "application/x-www-form-urlencoded")],
+            body: revoke.as_bytes(),
+            limit: 4096,
+        }) {
+            log::info!("revoking the sign-in token at {base}: {e}");
+        }
     }
 }
 
@@ -822,6 +944,66 @@ mod tests {
         assert!(seen
             .iter()
             .any(|r| r.contains("redirect_uris=http%3A%2F%2Fapp.local%2Fauth%2Fcallback")));
+    }
+
+    #[test]
+    fn keeping_a_token_asks_for_more_and_skips_the_revoke() {
+        let (base, seen) = mock_instance();
+        let fetch: Arc<dyn Fetch> = Arc::new(PlainFetch::default());
+        let o = OAuth::new(
+            Config {
+                app_name: "Test",
+                extra_scopes: "write:statuses",
+                ..Config::default()
+            },
+            Arc::new(MemKv::default()),
+            fetch.clone(),
+            fetch,
+        );
+        o.set_providers(vec![Provider {
+            id: "home".into(),
+            base: base.clone(),
+            trust: Trust::Household,
+        }]);
+        // A plain sign-in still asks only to read.
+        let t = o.start("home", "http://app.local", "login".into()).unwrap();
+        o.run_once();
+        let h = with_cookie(&t);
+        let Poll::Redirect(url) = o.poll(&Request::new("GET", "/", &h, b"", false), &t) else {
+            panic!("no redirect")
+        };
+        assert!(url.contains("scope=profile&"), "{url}");
+        // Keeping the token asks for the extra scope too.
+        let t = o
+            .start_keeping_token("home", "http://app.local", "link:1".into())
+            .unwrap();
+        o.run_once();
+        let h = with_cookie(&t);
+        let req = Request::new("GET", "/", &h, b"", false);
+        let Poll::Redirect(url) = o.poll(&req, &t) else {
+            panic!("no redirect")
+        };
+        assert!(url.contains("scope=profile%20write%3Astatuses"), "{url}");
+        let uri = format!("/auth/callback?code=good&state={t}");
+        o.callback(&Request::new("GET", &uri, &h, b"", false))
+            .unwrap();
+        o.run_once();
+        let Poll::Done(identity, _) = o.poll(&req, &t) else {
+            panic!("not done")
+        };
+        assert_eq!(o.take_token(&identity).as_deref(), Some("tok"));
+        assert_eq!(o.take_token(&identity), None, "handed out once");
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().any(|r| r.starts_with("POST /api/v1/apps")
+            && r.contains("scopes=profile+write%3Astatuses")
+            || r.starts_with("POST /api/v1/apps")
+                && r.contains("scopes=profile%20write%3Astatuses")));
+        assert!(
+            !seen.iter().any(|r| r.starts_with("POST /oauth/revoke")),
+            "a kept token isn't revoked"
+        );
+        drop(seen);
+        o.revoke("home", "tok").unwrap();
     }
 
     #[test]

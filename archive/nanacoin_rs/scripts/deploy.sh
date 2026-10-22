@@ -6,7 +6,7 @@ port=$1
 shift
 [[ $# == 0 || ( $# == 1 && $1 == --dry-run ) ]] || { echo 'Only --dry-run is accepted; no erase/recovery flags.' >&2; exit 2; }
 if [[ -d /c/Espressif/frameworks/esp-idf-v5.5.3 ]]; then
-  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-C:/ncr}"
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-C:/tmp/ncr}"
 fi
 bash scripts/build-esp32.sh
 esp_python="${NANACOIN_ESPTOOL_PYTHON:-python}"

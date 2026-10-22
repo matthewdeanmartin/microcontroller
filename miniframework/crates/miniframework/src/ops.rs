@@ -130,6 +130,27 @@ impl Check {
             _ => Status::Ok,
         }
     }
+
+    /// Byte-capacity variant; keeps the percentage measurement and formats
+    /// only the human summary. Storage apps opt in without changing check IDs.
+    pub fn usage_bytes(id: &str, what: &str, used: u64, total: u64, warn: f64, fail: f64) -> Check {
+        fn bytes(n: u64) -> String {
+            for (scale, unit) in [(1u64 << 30, "GiB"), (1 << 20, "MiB"), (1 << 10, "KiB")] {
+                if n >= scale {
+                    return format!("{:.1} {unit}", n as f64 / scale as f64);
+                }
+            }
+            format!("{n} B")
+        }
+        let mut check = Self::usage(id, what, used as f64, total as f64, warn, fail);
+        check.summary = format!(
+            "{what}: {:.0}% used ({} of {})",
+            check.value,
+            bytes(used),
+            bytes(total)
+        );
+        check
+    }
 }
 
 /// Thresholds for the framework's checks (`Config::ops`). The defaults
@@ -291,6 +312,15 @@ pub fn health(info: &SysInfo, mut checks: Vec<Check>, app: Vec<Check>) -> Health
 
 #[cfg(all(test, not(target_os = "espidf")))]
 mod tests {
+    #[test]
+    fn byte_usage_preserves_measurement_but_formats_capacity() {
+        let check =
+            super::Check::usage_bytes("sd.space", "SD card", 507904, 31251120128, 80.0, 95.0);
+        assert!(check.summary.contains("496.0 KiB of 29.1 GiB"));
+        assert_eq!(check.value, 507904.0 * 100.0 / 31251120128.0);
+        assert_eq!(check.unit, "%");
+        assert_eq!(check.status, "ok");
+    }
     use super::*;
     use crate::desktop::DesktopPlatform;
     use crate::site::{Config, Scratch};
@@ -414,5 +444,17 @@ mod tests {
         assert!(links
             .iter()
             .any(|l| l.rel == "health" && l.href == "/.well-known/ops/health"));
+        let raw = b"GET /.well-known/ops/actions HTTP/1.1\r\nHost: x\r\n\r\n";
+        let request = http::parse(raw, 1024).unwrap().unwrap();
+        let (status, _, _, body) = site
+            .respond(&request, false, &mut Scratch::new(4096))
+            .into_parts();
+        assert_eq!(status, 200);
+        let http::Body::Owned(body) = body else {
+            panic!("catalog must be JSON");
+        };
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["schema"], "miniframework.actions/1");
+        assert_eq!(body["actions"], serde_json::json!([]));
     }
 }

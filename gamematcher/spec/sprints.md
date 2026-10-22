@@ -170,6 +170,12 @@ retry with the same Idempotency-Key, backing off for up to 24 h. Sign-in runs fi
 - **Exit:** unplug the internet, lock in a plan, plug it back in, and it posts exactly
   once. A reboot mid-queue still posts once. Sign-in takes priority over a queued post.
 
+## Sprint 10: per-record storage (run before Sprint 9)
+
+**Built October 21, 2026 (desktop-tested; firmware not yet built or flashed).** Every write used to
+re-encode and rewrite the whole state, so cost grew with n. Now a commit writes only the records it
+touched. Details and deviations in [sprint-10-storage.md](sprint-10-storage.md).
+
 ## Sprint 9: hardening and v1 release
 
 - Bench (`miniframework/bench`) load profile: a game night of 6 phones on

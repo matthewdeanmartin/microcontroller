@@ -197,8 +197,10 @@ impl State {
             return Ok(false);
         }
         self.games.remove(i);
-        for a in &mut self.accounts {
-            a.interests.retain(|&g| g != id);
+        for j in 0..self.accounts.len() {
+            if self.accounts[j].interests.contains(&id) {
+                self.accounts[j].interests.retain(|&g| g != id);
+            }
         }
         Ok(true)
     }
@@ -219,14 +221,24 @@ impl State {
                 }
             }
         };
-        for a in &mut self.accounts {
-            swap(&mut a.interests);
+        // Only rows that mention `from` are touched (and saved).
+        for j in 0..self.accounts.len() {
+            if self.accounts[j].interests.contains(&from) {
+                swap(&mut self.accounts[j].interests);
+            }
         }
-        for p in &mut self.plans {
-            swap(&mut p.games);
-            swap(&mut p.chosen_games);
-            for r in &mut p.responses {
-                swap(&mut r.games);
+        for j in 0..self.plans.len() {
+            let p = &self.plans[j];
+            let uses = p.games.contains(&from)
+                || p.chosen_games.contains(&from)
+                || p.responses.iter().any(|r| r.games.contains(&from));
+            if uses {
+                let p = &mut self.plans[j];
+                swap(&mut p.games);
+                swap(&mut p.chosen_games);
+                for r in &mut p.responses {
+                    swap(&mut r.games);
+                }
             }
         }
         self.games.remove(i);

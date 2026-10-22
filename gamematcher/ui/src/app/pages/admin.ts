@@ -97,8 +97,9 @@ import { Mail } from './mail';
         <dl class="facts">
           <dt>Accounts</dt><dd>{{ s.accounts }} / {{ s.max_accounts }}</dd>
           <dt>Signed-in devices</dt><dd>{{ s.sessions }} / {{ s.max_sessions }}</dd>
-          <dt>Saved state</dt><dd>{{ s.snapshot_bytes }} bytes, generation {{ s.generation }}, {{ s.commits }} commits</dd>
-          @if (s.fallback_used) { <dt>Warning</dt><dd class="error">The newest save was damaged; the board started from the one before.</dd> }
+          <dt>Saved state</dt><dd>{{ s.records }} records, {{ s.commits }} commits; the last wrote {{ s.last_commit_bytes }} bytes (largest {{ s.max_commit_bytes }})</dd>
+          @if (s.migrated) { <dt>Upgrade</dt><dd>This start converted the old saved state to records.</dd> }
+          @if (s.quarantined.length) { <dt>Warning</dt><dd class="error">{{ s.quarantined.length }} saved item(s) were damaged and are not shown: {{ s.quarantined.join('; ') }}</dd> }
         </dl>
         <p class="aside"><a href="/api/v1/sys?fmt=json">System details</a> · <a href="/api/v1/log.txt">Log</a></p>
       </section>

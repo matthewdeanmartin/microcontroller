@@ -1,0 +1,57 @@
+# party on an ESP32-S3 N16R8: two Xtensa cores at 240 MHz, 16 MiB flash,
+# 8 MiB octal PSRAM. Derived from mastomini's measured S3 profile.
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# PSRAM holds the in-RAM indexes, queues and publication buffers
+# (spec/07-storage-limits.md#ram-budget-s3-n16r8).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
+# The 7.5 MiB partydata partition's page cache would not fit internal RAM.
+CONFIG_NVS_ALLOCATE_CACHE_IN_SPIRAM=y
+# Wi-Fi and lwIP buffers in PSRAM: with them internal, mastomini saw internal
+# RAM drained and TLS writes fail mid-response.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=16384
+CONFIG_FREERTOS_UNICORE=n
+# miniframework waits in 1 ms steps; at the 100 Hz default each is 10 ms.
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+# Large-board connection limits plus outbound HTTPS, DNS, SNTP and mDNS.
+CONFIG_LWIP_MAX_SOCKETS=24
+CONFIG_LWIP_MAX_ACTIVE_TCP=24
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+CONFIG_LWIP_LOCAL_HOSTNAME="party"
+
+# HTTPS builds use esp-tls server sessions with tickets (a returning browser
+# resumes instead of a full handshake). Unused in plain-HTTP builds.
+CONFIG_ESP_TLS_SERVER=y
+CONFIG_ESP_TLS_SERVER_SESSION_TICKETS=y
+CONFIG_MBEDTLS_ECP_FIXED_POINT_OPTIM=y
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=n
+# TLS sessions allocate from PSRAM, leaving internal RAM for Wi-Fi and stacks.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# Public CAs for outbound HTTPS (mastodon.social, api.github.com, Brevo).
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+# A TLS handshake took ~1.5 s at 160 MHz on mastomini. Mains powered: full speed.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
+# Boot logs also on the USB port, so deploys can read boot evidence.
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+
+# A crash saves task, PC and backtrace; the next boot reports it in /api/v1/log.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y

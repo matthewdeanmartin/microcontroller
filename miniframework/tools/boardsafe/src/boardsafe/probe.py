@@ -110,10 +110,14 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--address', required=True, help='board IP address or resolvable name')
     parser.add_argument('--ca', type=Path, help='household CA (PEM); defaults to the board registry')
     parser.add_argument('--attempts', type=int, default=15)
+    parser.add_argument('--receipt', type=Path, help='save the verified runtime build for SRE drift checks')
     args = parser.parse_args(argv)
     board = pick(load(args.registry), args.board)
     ca = args.ca or (board.root / board.ca)
     info = probe(board, args.address, ca, args.attempts)
+    if args.receipt:
+        from .receipt import write_receipt
+        print(f'SRE baseline: {write_receipt(args.receipt, info)}')
     detail = info['_probe']
     print(
         f"Probe passed for {board.id} ({board.hostname}, {info.get('platform')}, build {info.get('build')}): "

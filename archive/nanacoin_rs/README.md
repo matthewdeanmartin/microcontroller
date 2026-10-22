@@ -54,7 +54,7 @@ make certs       # development TLS files; preserves existing keys
 make firmware   # compile only; requires Wi-Fi settings
 ```
 
-Firmware targets ESP-IDF v5.5.3, esp-idf-svc 0.52.1 and managed mDNS 1.8.2. The application is Rust over ESP-IDF's C platform libraries. The script uses the installed Espressif Rust toolchain and, on this Windows machine, the SDK under `C:/Espressif`. Firmware output defaults to short path `C:/ncr` to avoid SDK path-length failures; override `CARGO_TARGET_DIR` if needed. Host output normally uses `target`.
+Firmware targets ESP-IDF v5.5.3, esp-idf-svc 0.52.1 and managed mDNS 1.8.2. The application is Rust over ESP-IDF's C platform libraries. The script uses the installed Espressif Rust toolchain and, on this Windows machine, the SDK under `C:/Espressif`. Firmware output defaults to short path `C:/tmp/ncr` to avoid SDK path-length failures; override `CARGO_TARGET_DIR` if needed. Host output normally uses `target`.
 
 ```bash
 export NANACOIN_WIFI_SSID='Your 2.4GHz Wi-Fi'

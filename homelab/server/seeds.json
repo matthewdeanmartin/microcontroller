@@ -18,12 +18,6 @@
     ]
   },
   {
-    "host": "housemetrics-v2.local",
-    "sources": [
-      "../miniframework/apps/housemetrics/boards.py"
-    ]
-  },
-  {
     "host": "housemetrics.local",
     "sources": [
       "../miniframework/apps/housemetrics/boards.py"
@@ -50,12 +44,6 @@
     ]
   },
   {
-    "host": "minicloud.local",
-    "sources": [
-      "../miniframework/apps/housemetrics/config/scrapes.json"
-    ]
-  },
-  {
     "host": "nanacoin-api.local",
     "sources": [
       "../../nanacoin/docs/tinygo/setup.md"
@@ -71,12 +59,6 @@
     "host": "nanacoin-rs.local",
     "sources": [
       "../../nanacoin/nanacoin_web/README.md"
-    ]
-  },
-  {
-    "host": "nanacoin-s2.local",
-    "sources": [
-      "../../nanacoin/nanacoin_rs/src/board.rs"
     ]
   },
   {

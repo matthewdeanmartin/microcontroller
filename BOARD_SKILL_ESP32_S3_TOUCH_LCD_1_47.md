@@ -121,7 +121,7 @@ Waveshare's wiki.
 | LCD CS / DC / reset | 21 / 45 / 40 | DC + reset match the factory log |
 | LCD backlight (PWM, active high) | 46 | CircuitPython |
 | Touch I2C SCL / SDA | 41 / 42 | both agree |
-| Touch interrupt / reset | 47 / 48 | **conflict:** the factory log sets 47 as an interrupt input and 48 as an output; CircuitPython names them the other way round. Trust the factory firmware until checked |
+| Touch interrupt / reset | **48 / 47** | **Checked on the board, 2026-10-19 (Merit Ledger Sprint 13):** INT is 48 and reset is 47, as CircuitPython has them. With INT read on 47, it never moved; on 48 it pulses once per touch report (a pulse, not a level: keep reading register 0x01 until the count is 0). Register reads need a write, a STOP, then a read; a repeated start returns zeros. The ID is `510601`, firmware 256 |
 | SD (SDMMC 4-bit) CLK / CMD / D0–D3 | 16 / 15 / 17, 18, 13, 14 | both agree |
 | BOOT button | 0 | factory log |
 | UART TX / RX | 43 / 44 | CircuitPython |

@@ -1,0 +1,9 @@
+# ESP32-S3 firmware (tools/build-s3.sh). The desktop build ignores this.
+# There is deliberately no `runner`: only tools/deploy-s3.py writes to a board.
+[target.xtensa-esp32s3-espidf]
+linker = "ldproxy"
+# ESP-IDF 5 uses a 64-bit time_t.
+rustflags = ["--cfg", "espidf_time64"]
+
+[env]
+MCU = "esp32s3"

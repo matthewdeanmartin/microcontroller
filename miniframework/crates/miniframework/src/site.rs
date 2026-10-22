@@ -676,6 +676,9 @@ pub struct Config {
     /// Thresholds for the framework's checks in `/.well-known/ops/health`.
     #[cfg(feature = "ops")]
     pub ops: crate::ops::OpsConfig,
+    /// Explicitly provisioned action gate. None allocates no gate or worker.
+    #[cfg(feature = "ops")]
+    pub ops_actions: Option<Box<crate::ops_actions::Gate>>,
 }
 
 impl Config {
@@ -706,6 +709,8 @@ impl Config {
             about: crate::about::AboutConfig::default(),
             #[cfg(feature = "ops")]
             ops: crate::ops::OpsConfig::default(),
+            #[cfg(feature = "ops")]
+            ops_actions: None,
         }
     }
 }
@@ -898,7 +903,7 @@ impl<S: Service> Site<S> {
             // The board's own descriptions; an app's SPA fallback must not answer them.
             || path == "/.well-known/miniframework"
             || path == "/.well-known/incidents"
-            || (cfg!(feature = "ops") && path == "/.well-known/ops/health")
+            || (cfg!(feature = "ops") && owned("/.well-known/ops"))
             || self.config.app_paths.iter().any(|p| *p != "/" && owned(p));
         // Machine health stays scrapeable in every transport mode.
         let metrics = path == "/metrics" && (method == "GET" || head);
@@ -1200,6 +1205,22 @@ impl<S: Service> Site<S> {
     }
 
     fn builtin_api(&self, req: &Request<'_>, reply: &mut Reply<'_>) {
+        #[cfg(feature = "ops")]
+        {
+            if self
+                .config
+                .ops_actions
+                .as_ref()
+                .is_some_and(|g| g.handle(req, reply))
+            {
+                return;
+            }
+            if req.method == "GET" && req.path == "/.well-known/ops/actions" {
+                reply.header("Cache-Control", "no-store");
+                reply.wire(req, &crate::ops_actions::empty_catalog());
+                return;
+            }
+        }
         if req.method != "GET" {
             return;
         }

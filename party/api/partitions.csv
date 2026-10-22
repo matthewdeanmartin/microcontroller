@@ -1,0 +1,13 @@
+# party on an ESP32-S3 N16R8 (16 MiB flash, 8 MiB octal PSRAM).
+# spec/01-overview.md#flash-layout-proposed-16-mib. app1 is reserved for OTA
+# so the table never has to change (that would need an export/import).
+# partydata holds the record store (NVS: wear levelling, power-loss-safe
+# replacement). Never erased by firmware.
+# Name,    Type, SubType, Offset,   Size
+nvs,       data, nvs,     0x9000,   0x6000,
+otadata,   data, ota,     0xF000,   0x2000,
+phy_init,  data, phy,     0x11000,  0x1000,
+app0,      app,  ota_0,   0x20000,  0x400000,
+app1,      app,  ota_1,   0x420000, 0x400000,
+partydata, data, nvs,     0x820000, 0x780000,
+coredump,  data, coredump,0xFA0000, 0x10000,

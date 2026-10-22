@@ -51,9 +51,16 @@ Then check, by IP if `.local` doesn't resolve:
 
 ```sh
 curl -s http://gamematcher.local/api/v1/status?fmt=json
-curl -s --cacert api/certs/household-ca.crt https://gamematcher.local/api/v1/status?fmt=json
+curl -s --ssl-no-revoke --cacert api/certs/household-ca.crt https://gamematcher.local/api/v1/status?fmt=json
 curl -s http://gamematcher.local/api/v1/log.txt | tail -20
+curl -s http://gamematcher.local/.well-known/ops/health
 ```
+
+Windows curl (schannel) needs `--ssl-no-revoke`: the household CA publishes
+no revocation list, so without it the check fails with
+`CERT_TRUST_REVOCATION_STATUS_UNKNOWN` and prints nothing. It still verifies
+the chain and hostname; never substitute `-k`. By IP, add
+`--resolve gamematcher.local:443:<ip>`.
 
 ## Diagnostics
 
@@ -62,4 +69,21 @@ curl -s http://gamematcher.local/api/v1/log.txt | tail -20
 - `/api/v1/log.txt`: the board's own log ring, including the previous
   boot's crash report from the core dump. Prefer it to serial captures.
 - `/metrics`: the same as Influx lines, plus `gm_accounts`, `gm_sessions`,
-  `gm_commits`, `gm_snapshot_bytes` (housemetrics can scrape it).
+  `gm_commits`, `gm_last_commit_bytes`, `gm_max_commit_bytes` (housemetrics can scrape it).
+- `/.well-known/ops/health`: miniframework `ops` checks plus Game Matcher's
+  `store.slot`, `store.accounts`, `store.games` (read by mastomini-bots' `sre`).
+
+## Deployments
+
+### 2026-10-19: ops health endpoint (SRE sprint 0)
+
+- Owner attached the board for this flash. COM17, composite and esptool base
+  MAC `ac:eb:e6:1e:13:40`, 8 MB flash. `make check` passed.
+- `make update`: app 2,408,576 / 2,621,440 bytes (91.9%), written at
+  `0x10000` only, hash verified. No backup (owner's choice; slow USB).
+- Before: build `4b10110+`, setup done, `clock_synced: false`. After: build
+  `6f335bf`, setup done, clock synced, HTTP and strict HTTPS (household CA,
+  `--ssl-no-revoke`) status 200 at `192.168.1.163`.
+- Health all `ok`: 88 KiB internal free (lowest 56 KiB), largest block
+  55 KiB, −66 dBm, snapshot slot current, 2/32 accounts, 6/256 games.
+- Logs: `.local/ops-deploy-*.log`.

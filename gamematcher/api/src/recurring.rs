@@ -119,23 +119,21 @@ impl State {
             );
             drafts.push(draft);
         }
-        let backup = self.to_stored();
-        let mail = self.mail.clone();
+        let sp = self.savepoint();
         let mut ids = Vec::new();
         for draft in drafts {
             match self.create_plan(host, &draft, now) {
                 Ok(id) => ids.push(id),
                 Err(e) => {
-                    *self = State::from_stored(backup, self.limits.clone());
-                    self.mail = mail;
+                    self.rollback(sp);
                     return Err(e);
                 }
             }
         }
         let first = ids[0];
-        for p in &mut self.plans {
-            if ids.contains(&p.id) {
-                p.series = first;
+        for i in 0..self.plans.len() {
+            if ids.contains(&self.plans[i].id) {
+                self.plans[i].series = first;
             }
         }
         Ok(first)

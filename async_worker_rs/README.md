@@ -58,7 +58,7 @@ coordinate this limit, so use a local upstream for load experiments.
 ## Build for the S2
 
 The Git Bash script supports this workstation's existing ESP-IDF 5.5.3 and
-`esp` Rust toolchain. It puts intermediate files in `C:/awr` to avoid Windows
+`esp` Rust toolchain. It puts intermediate files in `C:/tmp/awr` to avoid Windows
 path limits. Elsewhere, activate ESP-IDF and espup's environment first.
 Dependencies/tools: Rust `esp` with rust-src, ldproxy, ESP-IDF 5.5.3,
 Python with esptool 4.x, CMake and Ninja.

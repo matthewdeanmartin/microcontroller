@@ -1,6 +1,6 @@
 //! Every message Game Matcher sends, accepts or stores. Tags are protobuf
 //! field numbers and CBOR integer keys: add fields with new numbers, never
-//! renumber. Stored messages (`Stored*`) are the snapshot's schema.
+//! renumber. Stored messages (`Stored*`) are the flash records' schema.
 use miniframework::message;
 
 // ---- API -----------------------------------------------------------------
@@ -306,6 +306,16 @@ message! {
         /// The slot boot loaded from, and whether the other one was valid.
         8 loaded_slot: u32,
         9 fallback_used: bool,
+        /// Records on flash (rows, sessions, meta, index).
+        10 records: u32,
+        /// Bytes the last commit wrote (journal included).
+        11 last_commit_bytes: u32,
+        /// Largest commit since boot.
+        12 max_commit_bytes: u32,
+        /// Records that failed to load (left on flash, not served).
+        13 quarantined: Vec<String>,
+        /// This boot converted the old snapshot slots to records.
+        14 migrated: bool,
     }
 }
 
@@ -762,7 +772,42 @@ message! {
 }
 
 message! {
-    /// The whole durable state. Comments live in their own blobs.
+    /// The `meta` record: everything that isn't a row (`spec/sprint-10-storage.md`).
+    pub struct StoredMeta {
+        1 schema: u32,
+        2 next_account: u32,
+        3 signup_closed: bool,
+        4 next_game: u32,
+        5 next_plan: u32,
+        6 next_notification: u32,
+        7 house_feed_hash: String,
+        8 next_provider: u32,
+    }
+}
+
+message! {
+    /// The `idx` record: which rows exist, in order. Written only when a row
+    /// is added or removed.
+    pub struct StoredIndex {
+        1 accounts: Vec<u32>,
+        2 games: Vec<u32>,
+        3 plans: Vec<u32>,
+        4 providers: Vec<u32>,
+        /// Accounts with an `s<id>` sessions record.
+        5 sessions: Vec<u32>,
+    }
+}
+
+message! {
+    /// One account's sessions (`s<id>`).
+    pub struct StoredSessions {
+        1 sessions: Vec<StoredSession>,
+    }
+}
+
+message! {
+    /// The whole durable state as schema 1 kept it (two snapshot slots).
+    /// Read only to migrate to records.
     pub struct StoredState {
         1 schema: u32,
         2 next_account: u32,

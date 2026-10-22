@@ -30,6 +30,7 @@ service. Those were cut or deferred. The reasons are in each file.
 | [07-display.md](07-display.md) | The board's LCD, BOOT button and LED |
 | [08-mastodon.md](08-mastodon.md) | Optional outbound Mastodon: bot announcements and DMs |
 | [sprints.md](sprints.md) | Sprints 0–9 with exit criteria |
+| [sprint-10-storage.md](sprint-10-storage.md) | Sprint 10: per-record storage, replacing whole-state commits |
 | [roadmap.md](roadmap.md) | After v1: more boards, import/export for migration, OTA, email |
 | [open-questions.md](open-questions.md) | Assumptions made while writing this, to confirm |
 

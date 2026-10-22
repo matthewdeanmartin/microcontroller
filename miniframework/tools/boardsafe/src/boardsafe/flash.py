@@ -167,10 +167,25 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--port', required=True)
     parser.add_argument('--image', type=Path, help='defaults to the board target directory')
     parser.add_argument('--dry-run', action='store_true', help='check the image and print the plan; no serial port')
+    parser.add_argument('--receipt', type=Path, help='after updating, verify the board and save its observed build')
+    parser.add_argument('--verify-address', help='IP/name for the post-update TLS probe (required with --receipt)')
     args = parser.parse_args(argv)
+    if bool(args.receipt) != bool(args.verify_address):
+        parser.error('--receipt and --verify-address must be supplied together')
     boards = load(args.registry)
     board = pick(boards, args.board)
-    update(board, args.port, (args.image or board.image()).resolve(), boards.values(), args.dry_run)
+    image = (args.image or board.image()).resolve()
+    if args.receipt and not args.dry_run:
+        import hashlib
+        digest = hashlib.sha256(image.read_bytes()).hexdigest()
+    update(board, args.port, image, boards.values(), args.dry_run)
+    if args.receipt and not args.dry_run:
+        from .probe import probe
+        from .receipt import write_receipt
+        info = probe(board, args.verify_address, board.root / board.ca, 15)
+        if hashlib.sha256(image.read_bytes()).hexdigest() != digest:
+            raise SystemExit('Image changed during deployment; no receipt written')
+        print(f'SRE baseline: {write_receipt(args.receipt, info, image_sha256=digest)}')
 
 
 if __name__ == '__main__':

@@ -1,15 +1,17 @@
 //! The domain state and its rules, free of HTTP and storage so it can be
 //! tested directly. `api.rs` locks it, calls these, and commits.
 use crate::messages::{
-    AdminUserUpdate, StoredAccount, StoredGame, StoredPlan, StoredProvider, StoredSession,
-    StoredState,
+    AdminUserUpdate, StoredAccount, StoredGame, StoredMeta, StoredPlan, StoredProvider,
+    StoredSession, StoredState,
 };
 use crate::pin;
+use crate::table::Table;
 use miniframework::session::{Record, SessionConfig, Sessions};
 use miniframework::ApiError;
 
-/// Snapshot schema this firmware writes (and the newest it can read).
-pub const SCHEMA: u16 = 1;
+/// Record schema this firmware writes (and the newest it can read).
+/// Schema 1 was the two-slot snapshot, read only to migrate.
+pub const SCHEMA: u16 = 2;
 
 /// Bounds that differ between a board and a desktop
 /// (`spec/05-storage-limits.md`).
@@ -52,21 +54,35 @@ impl Limits {
     }
 }
 
-pub struct State {
+/// Rows and sessions as loaded from flash.
+#[derive(Default)]
+pub struct Parts {
     pub accounts: Vec<StoredAccount>,
+    pub games: Vec<StoredGame>,
+    pub plans: Vec<StoredPlan>,
+    pub providers: Vec<StoredProvider>,
+    pub sessions: Vec<StoredSession>,
+    pub commits: u64,
+}
+
+pub struct State {
+    pub accounts: Table<StoredAccount>,
     pub sessions: Sessions,
+    /// Sessions may differ from flash although `sessions.dirty()` says
+    /// otherwise (a rollback rebuilt them).
+    pub sessions_unsure: bool,
     pub next_account: u32,
     pub signup_closed: bool,
     pub commits: u64,
-    pub games: Vec<StoredGame>,
+    pub games: Table<StoredGame>,
     pub next_game: u32,
-    pub plans: Vec<StoredPlan>,
+    pub plans: Table<StoredPlan>,
     pub next_plan: u32,
     pub next_notification: u32,
     /// SHA-256 (hex) of the household calendar token; empty = off.
     pub house_feed_hash: String,
     /// Mastodon instances people may sign in with.
-    pub providers: Vec<StoredProvider>,
+    pub providers: Table<StoredProvider>,
     pub next_provider: u32,
     /// Comment threads to delete from the Kv (their plans left the ring);
     /// `api.rs` drains this after each commit.
@@ -79,11 +95,24 @@ pub struct State {
     pub limits: Limits,
 }
 
-fn hex(bytes: &[u8]) -> String {
+/// Where [`State::rollback`] returns to. Rows cost only what changed since;
+/// sessions (≤ 64 small records) and the screen feed are copied whole.
+pub struct Savepoint {
+    tables: [usize; 4],
+    meta: StoredMeta,
+    commits: u64,
+    sessions: Vec<Record>,
+    sessions_dirty: bool,
+    feed: std::collections::VecDeque<crate::screen::deck::FeedEvent>,
+    mail: usize,
+    dropped_threads: usize,
+}
+
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn unhex32(s: &str) -> Option<[u8; 32]> {
+pub(crate) fn unhex32(s: &str) -> Option<[u8; 32]> {
     let mut out = [0u8; 32];
     if s.len() != 64 {
         return None;
@@ -151,29 +180,17 @@ fn pin_hash(pin: &str, rounds: u32) -> Result<String, ApiError> {
 
 impl State {
     pub fn new(limits: Limits) -> Self {
-        Self {
-            accounts: Vec::new(),
-            sessions: Sessions::new(session_config(&limits)),
-            next_account: 1,
-            signup_closed: false,
-            commits: 0,
-            games: Vec::new(),
-            next_game: 1,
-            plans: Vec::new(),
-            next_plan: 1,
-            next_notification: 1,
-            house_feed_hash: String::new(),
-            providers: Vec::new(),
-            next_provider: 1,
-            dropped_threads: Vec::new(),
-            feed: Default::default(),
-            mail: Vec::new(),
-            limits,
-        }
+        Self::from_parts(StoredMeta::default(), Parts::default(), limits)
     }
 
-    pub fn from_stored(stored: StoredState, limits: Limits) -> Self {
-        let records = stored
+    /// Builds the state from loaded records. Counters are repaired upwards
+    /// from the rows, so a row written just before a crash (whose `meta`
+    /// never landed) can't have its id handed out again.
+    pub fn from_parts(meta: StoredMeta, parts: Parts, limits: Limits) -> Self {
+        let next = |stored: u32, ids: &mut dyn Iterator<Item = u32>| {
+            stored.max(ids.map(|id| id + 1).max().unwrap_or(1)).max(1)
+        };
+        let records = parts
             .sessions
             .iter()
             .filter_map(|s| {
@@ -186,27 +203,23 @@ impl State {
             })
             .collect();
         Self {
-            next_account: stored
-                .next_account
-                .max(stored.accounts.iter().map(|a| a.id + 1).max().unwrap_or(1)),
-            accounts: stored.accounts,
+            next_account: next(meta.next_account, &mut parts.accounts.iter().map(|a| a.id)),
+            next_game: next(meta.next_game, &mut parts.games.iter().map(|g| g.id)),
+            next_plan: next(meta.next_plan, &mut parts.plans.iter().map(|p| p.id)),
+            next_provider: next(
+                meta.next_provider,
+                &mut parts.providers.iter().map(|p| p.id),
+            ),
+            accounts: Table::from_rows(parts.accounts),
             sessions: Sessions::restore(session_config(&limits), records),
-            signup_closed: stored.signup_closed,
-            commits: stored.commits,
-            next_game: stored
-                .next_game
-                .max(stored.games.iter().map(|g| g.id + 1).max().unwrap_or(1)),
-            games: stored.games,
-            next_plan: stored
-                .next_plan
-                .max(stored.plans.iter().map(|p| p.id + 1).max().unwrap_or(1)),
-            plans: stored.plans,
-            next_notification: stored.next_notification.max(1),
-            house_feed_hash: stored.house_feed_hash,
-            next_provider: stored
-                .next_provider
-                .max(stored.providers.iter().map(|p| p.id + 1).max().unwrap_or(1)),
-            providers: stored.providers,
+            sessions_unsure: false,
+            signup_closed: meta.signup_closed,
+            commits: parts.commits,
+            games: Table::from_rows(parts.games),
+            plans: Table::from_rows(parts.plans),
+            next_notification: meta.next_notification.max(1),
+            house_feed_hash: meta.house_feed_hash,
+            providers: Table::from_rows(parts.providers),
             dropped_threads: Vec::new(),
             feed: Default::default(),
             mail: Vec::new(),
@@ -214,33 +227,120 @@ impl State {
         }
     }
 
-    pub fn to_stored(&self) -> StoredState {
-        StoredState {
+    /// Schema 1's snapshot (migration only).
+    pub fn from_stored(stored: StoredState, limits: Limits) -> Self {
+        let meta = StoredMeta {
+            schema: SCHEMA as u32,
+            next_account: stored.next_account,
+            signup_closed: stored.signup_closed,
+            next_game: stored.next_game,
+            next_plan: stored.next_plan,
+            next_notification: stored.next_notification,
+            house_feed_hash: stored.house_feed_hash,
+            next_provider: stored.next_provider,
+        };
+        let parts = Parts {
+            accounts: stored.accounts,
+            games: stored.games,
+            plans: stored.plans,
+            providers: stored.providers,
+            sessions: stored.sessions,
+            commits: stored.commits,
+        };
+        Self::from_parts(meta, parts, limits)
+    }
+
+    /// Everything that isn't a row.
+    pub fn meta(&self) -> StoredMeta {
+        StoredMeta {
             schema: SCHEMA as u32,
             next_account: self.next_account,
-            accounts: self.accounts.clone(),
-            sessions: self
-                .sessions
-                .records()
-                .iter()
-                .map(|r| StoredSession {
-                    hash: hex(&r.hash),
-                    account: r.subject,
-                    created: r.created,
-                    last_seen: r.last_seen,
-                })
-                .collect(),
             signup_closed: self.signup_closed,
-            commits: self.commits,
-            games: self.games.clone(),
             next_game: self.next_game,
-            plans: self.plans.clone(),
             next_plan: self.next_plan,
             next_notification: self.next_notification,
             house_feed_hash: self.house_feed_hash.clone(),
-            providers: self.providers.clone(),
             next_provider: self.next_provider,
         }
+    }
+
+    fn set_meta(&mut self, m: StoredMeta) {
+        self.next_account = m.next_account;
+        self.signup_closed = m.signup_closed;
+        self.next_game = m.next_game;
+        self.next_plan = m.next_plan;
+        self.next_notification = m.next_notification;
+        self.house_feed_hash = m.house_feed_hash;
+        self.next_provider = m.next_provider;
+    }
+
+    /// Sessions in their stored form, grouped by account (ascending).
+    pub fn stored_sessions(&self) -> std::collections::BTreeMap<u32, Vec<StoredSession>> {
+        let mut by: std::collections::BTreeMap<u32, Vec<StoredSession>> = Default::default();
+        for r in self.sessions.records() {
+            by.entry(r.subject).or_default().push(StoredSession {
+                hash: hex(&r.hash),
+                account: r.subject,
+                created: r.created,
+                last_seen: r.last_seen,
+            });
+        }
+        by
+    }
+
+    pub fn savepoint(&mut self) -> Savepoint {
+        Savepoint {
+            tables: [
+                self.accounts.savepoint(),
+                self.games.savepoint(),
+                self.plans.savepoint(),
+                self.providers.savepoint(),
+            ],
+            meta: self.meta(),
+            commits: self.commits,
+            sessions: self.sessions.records().to_vec(),
+            sessions_dirty: self.sessions.dirty() || self.sessions_unsure,
+            feed: self.feed.clone(),
+            mail: self.mail.len(),
+            dropped_threads: self.dropped_threads.len(),
+        }
+    }
+
+    /// Undoes everything since `sp`, in RAM. Flash is untouched.
+    pub fn rollback(&mut self, sp: Savepoint) {
+        let [a, g, p, v] = sp.tables;
+        self.accounts.rollback(a);
+        self.games.rollback(g);
+        self.plans.rollback(p);
+        self.providers.rollback(v);
+        self.set_meta(sp.meta);
+        self.commits = sp.commits;
+        if self.sessions.records() != sp.sessions.as_slice() {
+            self.sessions = Sessions::restore(session_config(&self.limits), sp.sessions);
+            self.sessions_unsure |= sp.sessions_dirty;
+        }
+        self.feed = sp.feed;
+        self.mail.truncate(sp.mail);
+        self.dropped_threads.truncate(sp.dropped_threads);
+    }
+
+    /// The records just written match RAM.
+    pub fn saved(&mut self) {
+        self.accounts.saved();
+        self.games.saved();
+        self.plans.saved();
+        self.providers.saved();
+        self.sessions.saved();
+        self.sessions_unsure = false;
+    }
+
+    /// Marks every row dirty (migration writes them all).
+    pub fn mark_all(&mut self) {
+        self.accounts.mark_all();
+        self.games.mark_all();
+        self.plans.mark_all();
+        self.providers.mark_all();
+        self.sessions_unsure = true;
     }
 
     /// The name to show for an account (or a placeholder for a gone one).
@@ -255,8 +355,7 @@ impl State {
 
     pub fn account_mut(&mut self, id: u32) -> Result<&mut StoredAccount, ApiError> {
         self.accounts
-            .iter_mut()
-            .find(|a| a.id == id)
+            .get_mut(id)
             .ok_or_else(|| ApiError::not_found("No such account"))
     }
 
@@ -602,19 +701,42 @@ mod tests {
     }
 
     #[test]
-    fn stored_round_trip() {
+    fn rollback_undoes_rows_counters_and_sessions() {
+        let mut s = State::new(limits());
+        let dad = s.setup("dad@h", "Dad", "1234", 5).unwrap();
+        s.saved();
+        let sp = s.savepoint();
+        s.signup("kid@h", "Kid", "1234", 6).unwrap();
+        s.account_mut(dad).unwrap().display_name = "Papa".into();
+        s.sessions.create(dad, Some(6)).unwrap();
+        s.signup_closed = true;
+        s.rollback(sp);
+        assert_eq!(s.accounts.len(), 1);
+        assert_eq!(s.account(dad).unwrap().display_name, "Dad");
+        assert_eq!(s.sessions.count(dad), 0);
+        assert!(!s.signup_closed);
+        assert_eq!(s.next_account, 2);
+    }
+
+    #[test]
+    fn schema_one_snapshot_converts() {
         let mut s = State::new(limits());
         let dad = s.setup("dad@h", "Dad", "1234", 5).unwrap();
         s.sessions.create(dad, Some(5)).unwrap();
-        s.signup_closed = true;
-        let bytes =
-            miniframework::wire::to_vec(miniframework::Format::CborInt, &s.to_stored()).unwrap();
-        let back: StoredState =
-            miniframework::wire::decode(miniframework::Format::CborInt, &bytes).unwrap();
-        let again = State::from_stored(back, limits());
+        let old = StoredState {
+            schema: 1,
+            next_account: s.next_account,
+            accounts: s.accounts.to_vec(),
+            sessions: s.stored_sessions().into_values().flatten().collect(),
+            signup_closed: true,
+            commits: 7,
+            ..Default::default()
+        };
+        let again = State::from_stored(old, limits());
         assert_eq!(again.accounts, s.accounts);
         assert_eq!(again.sessions.records(), s.sessions.records());
         assert!(again.signup_closed);
         assert_eq!(again.next_account, 2);
+        assert_eq!(again.commits, 7);
     }
 }

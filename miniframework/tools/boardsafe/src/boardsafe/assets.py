@@ -23,10 +23,10 @@ def bundled_assets(web_dir):
     generated = (Path(web_dir) / "assets.rs").read_text(encoding="utf-8")
     assets = []
     for line in generated.splitlines():
-        match = re.search(r'path: "([^"]+)".*?raw: include_bytes!\("([^"]+)"\).*?gzip: include_bytes!\("([^"]+)"\)', line)
+        match = re.search(r'path: "([^"]+)".*?raw: (?:include_bytes!\("([^"]+)"\)|b"").*?gzip: include_bytes!\("([^"]+)"\)', line)
         if match:
             uri, raw, zipped = match.groups()
-            raw, zipped = Path(raw).read_bytes(), Path(zipped).read_bytes()
+            raw, zipped = Path(raw).read_bytes() if raw else b'', Path(zipped).read_bytes()
             gzip_only = not raw
             assets.append((uri, gzip.decompress(zipped) if gzip_only else raw, zipped, gzip_only))
     if not assets or not any(asset[0] == "/index.html" for asset in assets):

@@ -157,11 +157,7 @@ impl State {
                 "That instance is already set up",
             ));
         }
-        *self
-            .providers
-            .iter_mut()
-            .find(|q| q.id == id)
-            .expect("found above") = p;
+        *self.providers.get_mut(id).expect("found above") = p;
         Ok(())
     }
 

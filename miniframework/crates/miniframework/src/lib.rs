@@ -26,6 +26,10 @@ pub mod mux;
 pub mod oauth;
 #[cfg(feature = "ops")]
 pub mod ops;
+#[cfg(feature = "ops")]
+pub mod ops_actions;
+#[cfg(feature = "ops")]
+pub mod planned_restart;
 #[cfg(feature = "queue")]
 pub mod queue;
 #[cfg(feature = "rate-limit")]

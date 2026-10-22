@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 if [[ -d /c/Espressif/frameworks/esp-idf-v5.5.3 ]]; then
   # esp-idf-sys rejects long Windows output paths before running CMake.
-  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-C:/awr}"
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-C:/tmp/awr}"
   export IDF_PATH="C:/Espressif/frameworks/esp-idf-v5.5.3"
   export IDF_TOOLS_PATH="C:/Espressif"
   export ESP_IDF_TOOLS_INSTALL_DIR=fromenv

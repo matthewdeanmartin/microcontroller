@@ -38,7 +38,7 @@ HOUSEMETRICS_BUILD=$(cd "$root" && git rev-parse --short HEAD 2>/dev/null || ech
 idf=/c/Espressif/frameworks/esp-idf-v5.5.3
 if [[ -d $idf ]]; then
   # esp-idf-sys rejects long Windows output paths; keep the target dir short.
-  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-C:/mfw-s2}"
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-C:/tmp/mfw-s2}"
   export IDF_PATH="C:/Espressif/frameworks/esp-idf-v5.5.3"
   export IDF_TOOLS_PATH="C:/Espressif"
   export ESP_IDF_TOOLS_INSTALL_DIR=fromenv
