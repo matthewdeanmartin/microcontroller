@@ -9,6 +9,11 @@ publish = false
 default-run = "party"
 build = "build.rs"
 
+# Keep application, binaries, build script and tests free of unsafe Rust.
+# Hardware FFI stays in the framework dependency.
+[lints.rust]
+unsafe_code = "forbid"
+
 [[bin]]
 name = "party"
 path = "src/bin/desktop.rs"

@@ -784,6 +784,18 @@ fn people_search_respects_discoverability() {
     let r = call(&app, "GET", "/api/v1/people?q=sa", Some(&dad), "");
     assert!(r.body.contains("Sam"), "admins see everyone");
     let r = call(&app, "GET", "/api/v1/people", Some(&stranger), "");
+    assert!(
+        r.body.contains("Sam"),
+        "new profiles default to board-wide discovery"
+    );
+    call(
+        &app,
+        "PATCH",
+        "/api/v1/me",
+        Some(&kid),
+        r#"{"discoverable":"members"}"#,
+    );
+    let r = call(&app, "GET", "/api/v1/people", Some(&stranger), "");
     assert!(!r.body.contains("Sam"), "no shared group: {}", r.body);
     call(
         &app,

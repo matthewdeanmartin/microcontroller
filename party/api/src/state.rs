@@ -600,7 +600,7 @@ impl State {
             admin,
             status: ACTIVE.into(),
             household: 0,
-            discoverable: "members".into(),
+            discoverable: "public".into(),
             bio: String::new(),
             created: now,
             last_seen: now,

@@ -233,4 +233,56 @@ mod tests {
         );
         assert_eq!(g.wait(Some(9), 1_000), 0);
     }
+
+    #[test]
+    fn malformed_hashes_never_match_or_panic() {
+        let expected = hex(&derive("4321", &[0], 1));
+        for stored in [
+            format!("other$1$00${expected}"),
+            format!("pbkdf2-sha256$0$00${expected}"),
+            format!("pbkdf2-sha256$-1$00${expected}"),
+            format!("pbkdf2-sha256$4294967296$00${expected}"),
+            format!("pbkdf2-sha256$1$0${expected}"),
+            format!("pbkdf2-sha256$1$zz${expected}"),
+            format!("pbkdf2-sha256$1$€x${expected}"),
+            format!("pbkdf2-sha256$1$00${expected}$extra"),
+            "pbkdf2-sha256$1$00$00".into(),
+            "pbkdf2-sha256$1$00".into(),
+        ] {
+            assert!(!verify("4321", &stored), "accepted {stored}");
+        }
+    }
+
+    #[test]
+    fn non_ascii_digits_and_embedded_whitespace_are_invalid() {
+        for pin in ["１２３４", "١٢٣٤", "12\n34", "12\0", "1234 ", ""] {
+            assert!(!valid(pin), "accepted {pin:?}");
+        }
+    }
+
+    #[test]
+    fn clearing_account_does_not_reset_board_budget() {
+        for success in [false, true] {
+            let mut g = Guard::new(GuardLimits {
+                free_failures: 1,
+                first_lock_ms: 2_000,
+                board_failures: 2,
+                window_ms: 1_000,
+                ..GuardLimits::default()
+            });
+            g.failed(Some(7), 0);
+            g.failed(None, 100);
+            assert_eq!(g.wait(Some(7), 200), 1_800);
+            if success {
+                g.succeeded(7);
+            } else {
+                g.clear(7);
+            }
+            assert_eq!(g.wait(Some(7), 200), 800);
+            assert_eq!(g.wait(None, 999), 1);
+            assert_eq!(g.wait(Some(7), 1_000), 0);
+            g.failed(Some(7), 1_001);
+            assert_eq!(g.wait(Some(7), 1_001), 2_000);
+        }
+    }
 }

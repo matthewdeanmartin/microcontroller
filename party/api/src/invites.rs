@@ -115,7 +115,7 @@ impl State {
             email,
             status: INVITED.into(),
             household: input.household,
-            discoverable: "members".into(),
+            discoverable: "public".into(),
             created: now,
             ..Default::default()
         });

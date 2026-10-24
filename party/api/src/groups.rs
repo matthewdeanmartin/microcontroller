@@ -912,6 +912,12 @@ mod tests {
             w.s.can_see_person(Some(w.co), &member),
             "they share a group"
         );
+        assert!(
+            w.s.can_see_person(Some(stranger), &member),
+            "new profiles are visible to everyone on the board"
+        );
+        w.s.person_mut(w.member).unwrap().discoverable = "members".into();
+        let member = w.s.person(w.member).unwrap().clone();
         assert!(!w.s.can_see_person(Some(stranger), &member));
         w.s.person_mut(w.member).unwrap().discoverable = "public".into();
         let member = w.s.person(w.member).unwrap().clone();

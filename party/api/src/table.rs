@@ -302,4 +302,85 @@ mod tests {
         assert_eq!(t[1].v, 0);
         assert_eq!(t.len(), 4);
     }
+
+    #[test]
+    fn loaded_rows_are_sorted_deduplicated_and_clean() {
+        let t = Table::from_rows(vec![
+            R { id: 3, v: 30 },
+            R { id: 1, v: 10 },
+            R { id: 3, v: 99 },
+        ]);
+        assert_eq!(t.ids().collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(t.get(3).unwrap().v, 30);
+        assert_eq!(t.position(2), None);
+        assert!(t.dirty().is_empty());
+    }
+
+    #[test]
+    fn inserted_rows_remain_searchable_and_rollback_removes_them() {
+        let mut t = Table::from_rows(vec![R { id: 4, v: 40 }]);
+        let sp = t.savepoint();
+        for id in [7, 1, 3, 6] {
+            t.push(R { id, v: id * 10 });
+        }
+        assert_eq!(t.ids().collect::<Vec<_>>(), [1, 3, 4, 6, 7]);
+        for id in [1, 3, 4, 6, 7] {
+            assert_eq!(t.get(id).unwrap().v, id * 10);
+        }
+        t.get_mut(3).unwrap().v = 99;
+        t.rollback(sp);
+        assert_eq!(t.rows, [R { id: 4, v: 40 }]);
+    }
+
+    #[test]
+    fn rollback_can_be_followed_by_another_edit_and_outer_rollback() {
+        let mut t = table();
+        let original = t.clone();
+        let outer = t.savepoint();
+        t.get_mut(2).unwrap().v = 10;
+        let inner = t.savepoint();
+        t.get_mut(2).unwrap().v = 20;
+        t.remove(1);
+        t.rollback(inner);
+        assert_eq!(t.get(2).unwrap().v, 10);
+        t.get_mut(2).unwrap().v = 30;
+        t.rollback(outer);
+        assert_eq!(t, original);
+    }
+
+    #[test]
+    fn bulk_changes_and_deletions_are_dirty_until_saved() {
+        let mut t = table();
+        let sp = t.savepoint();
+        for row in t.iter_mut() {
+            row.v += 1;
+        }
+        t.retain(|r| r.id % 2 == 0);
+        assert_eq!(t.ids().collect::<Vec<_>>(), [2, 4]);
+        assert_eq!(t.dirty().iter().copied().collect::<Vec<_>>(), [1, 2, 3, 4]);
+        t.rollback(sp);
+        assert_eq!(t, table());
+        // Rollback deliberately retains dirty ids so storage can be restored.
+        assert_eq!(t.dirty().len(), 4);
+        t.saved();
+        assert!(t.dirty().is_empty());
+        t.mark_all();
+        assert_eq!(t.dirty().iter().copied().collect::<Vec<_>>(), [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn empty_and_missing_mutations_do_not_dirty_rows() {
+        let mut t = Table::<R>::default();
+        assert_eq!(t.pop(), None);
+        assert_eq!(t.get_mut(99), None);
+        t.retain(|_| false);
+        t.mark_all();
+        assert!(t.dirty().is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "row 2 already exists")]
+    fn duplicate_insert_is_rejected() {
+        table().push(R { id: 2, v: 99 });
+    }
 }

@@ -342,6 +342,11 @@ impl OAuth {
             .find(|p| p.id == provider)
             .cloned()
             .ok_or_else(|| fail(format!("no provider {provider}")))?;
+        self.revoke_provider(&provider, token)
+    }
+
+    /// Revoke for an app-validated provider, including one supplied to start_provider.
+    pub fn revoke_provider(&self, provider: &Provider, token: &str) -> std::io::Result<()> {
         let r: Registration = self
             .kv
             .get(&registration_key(&provider.base))
@@ -380,6 +385,18 @@ impl OAuth {
             .find(|p| p.id == provider)
             .cloned()
             .ok_or_else(|| ApiError::not_found("No such sign-in provider"))?;
+        self.start_provider(provider, origin, intent, keep)
+    }
+
+    /// Start against an app-validated provider without changing the shared registry.
+    /// The provider is owned by the bounded flight, so concurrent logins stay isolated.
+    pub fn start_provider(
+        &self,
+        provider: Provider,
+        origin: &str,
+        intent: String,
+        keep: bool,
+    ) -> Result<String, ApiError> {
         let ticket =
             random_token().map_err(|_| ApiError::new(500, "no_randomness", "No random source"))?;
         let mut raw = [0u8; 32];
@@ -897,9 +914,33 @@ mod tests {
 
     #[test]
     fn full_flow_against_a_mock_instance() {
+        full_flow(false);
+    }
+
+    #[test]
+    fn full_flow_for_an_app_supplied_provider() {
+        full_flow(true);
+    }
+
+    fn full_flow(explicit: bool) {
         let (base, seen) = mock_instance();
         let o = oauth(&base);
-        let ticket = o.start("home", "http://app.local", "login".into()).unwrap();
+        let ticket = if explicit {
+            o.set_providers(Vec::new());
+            o.start_provider(
+                Provider {
+                    id: "other".into(),
+                    base: base.clone(),
+                    trust: Trust::Public,
+                },
+                "http://app.local",
+                "login".into(),
+                false,
+            )
+            .unwrap()
+        } else {
+            o.start("home", "http://app.local", "login".into()).unwrap()
+        };
         let h = with_cookie(&ticket);
         let req = Request::new("GET", "/", &h, b"", false);
         assert_eq!(o.poll(&req, &ticket), Poll::Waiting);
@@ -1004,6 +1045,16 @@ mod tests {
         );
         drop(seen);
         o.revoke("home", "tok").unwrap();
+        o.set_providers(Vec::new());
+        o.revoke_provider(
+            &Provider {
+                id: "typed".into(),
+                base,
+                trust: Trust::Public,
+            },
+            "tok",
+        )
+        .unwrap();
     }
 
     #[test]

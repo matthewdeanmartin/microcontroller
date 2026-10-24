@@ -286,7 +286,7 @@ impl State {
             id,
             display_name: name,
             status: ACTIVE.into(),
-            discoverable: "members".into(),
+            discoverable: "public".into(),
             created: now,
             last_seen: now,
             identities: vec![Self::stored(identity)],
